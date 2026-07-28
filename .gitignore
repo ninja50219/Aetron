@@ -223,47 +223,47 @@ __pycache__/
 *$py.class
 *.so
 
-# Środowiska wirtualne (venv) - zależności instalowane lokalnie, nie wrzucamy do repo
+# virtual environment (venv) - dependencys local instalation
 venv/
 env/
 .venv/
 ENV/
 
-# Dystrybucja / pakowanie
+# dystrybution / packing
 build/
 dist/
 *.egg-info/
 .eggs/
 
-# ===== Sekrety i konfiguracja lokalna =====
+# ===== secrets and local configuration =====
 .env
 .env.local
 *.key
 secrets.json
 config.local.json
 
-# ===== Narzędzia testowe / cache =====
+# ===== testing tools / cache =====
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
 
-# ===== Edytory / IDE =====
+# ===== edytors / IDE =====
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# ===== System operacyjny =====
+# ===== Operating System =====
 .DS_Store
 Thumbs.db
 
-# ===== Logi =====
+# ===== Logs =====
 *.log
 logs/
 
-# ===== Dane / duże pliki (specyficzne dla Aetrona - projekty analizowane przez narzędzie) =====
+# ===== Data / big files  =====
 /data/
 /cache/
 *.db
