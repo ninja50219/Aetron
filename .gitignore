@@ -216,3 +216,55 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Środowiska wirtualne (venv) - zależności instalowane lokalnie, nie wrzucamy do repo
+venv/
+env/
+.venv/
+ENV/
+
+# Dystrybucja / pakowanie
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ===== Sekrety i konfiguracja lokalna =====
+.env
+.env.local
+*.key
+secrets.json
+config.local.json
+
+# ===== Narzędzia testowe / cache =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ===== Edytory / IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== System operacyjny =====
+.DS_Store
+Thumbs.db
+
+# ===== Logi =====
+*.log
+logs/
+
+# ===== Dane / duże pliki (specyficzne dla Aetrona - projekty analizowane przez narzędzie) =====
+/data/
+/cache/
+*.db
+*.sqlite3
