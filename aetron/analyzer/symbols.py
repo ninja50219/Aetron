@@ -72,6 +72,10 @@ class FileSymbols:
     # it answers ("is this name used anywhere?") does not need scopes, and a
     # flat set keeps false "unused" reports down.
     references: set[str] = field(default_factory=set)
+    # String literals this file concatenates with something else, which is how
+    # dynamic dispatch is written: getattr(self, "_parse_doctype_" + name).
+    # Any definition starting with one of these may be reached that way.
+    dynamic_prefixes: set[str] = field(default_factory=set)
     # Set when the file could not be parsed; symbols and imports stay empty.
     parse_error: str | None = None
 

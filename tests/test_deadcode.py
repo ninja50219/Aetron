@@ -87,6 +87,45 @@ class TestFalsePositiveGuards:
         found = candidates(make_project, {"addon.py": "def unregister():\n    pass\n"})
         assert [c.confidence for c in found] == [Confidence.LOW]
 
+    def test_getattr_dispatch_downgrades_confidence(self, make_project):
+        # Found on CPython's _markupbase, which builds method names at runtime:
+        # getattr(self, "_parse_doctype_" + name). Four real methods looked
+        # dead with high confidence, which is the worst possible failure.
+        layout = {
+            "a.py": (
+                "class Parser:\n"
+                "    def dispatch(self, name):\n"
+                '        return getattr(self, "_parse_doctype_" + name)\n'
+                "    def _parse_doctype_element(self):\n        pass\n"
+            ),
+            "b.py": "from a import Parser\nParser().dispatch('element')\n",
+        }
+        found = [c for c in candidates(make_project, layout) if "doctype" in c.symbol.name]
+        assert [c.confidence for c in found] == [Confidence.LOW]
+
+    def test_fstring_prefix_also_counts(self, make_project):
+        layout = {
+            "a.py": (
+                "def handler_thing():\n    pass\n\n"
+                "def call(name):\n"
+                '    return globals()[f"handler_{name}"]\n'
+            )
+        }
+        found = [c for c in candidates(make_project, layout) if c.symbol.name == "handler_thing"]
+        assert [c.confidence for c in found] == [Confidence.LOW]
+
+    def test_unrelated_name_keeps_its_confidence(self, make_project):
+        # A dynamic prefix must not silence everything in the file.
+        layout = {
+            "a.py": (
+                "def call(name):\n"
+                '    return globals()["handler_" + name]\n\n'
+                "def _orphan():\n    pass\n"
+            )
+        }
+        found = [c for c in candidates(make_project, layout) if c.symbol.name == "_orphan"]
+        assert [c.confidence for c in found] == [Confidence.HIGH]
+
     def test_string_reference_counts_as_use(self, make_project):
         # __all__ and getattr() targets appear only as strings.
         layout = {"a.py": 'def exported():\n    pass\n\n__all__ = ["exported"]\n'}

@@ -67,8 +67,10 @@ def find_dead_code(files: list[FileSymbols]) -> list[DeadCodeCandidate]:
     the cost of missing same-named methods on different classes.
     """
     used: set[str] = set()
+    dynamic_prefixes: set[str] = set()
     for file_symbols in files:
         used |= file_symbols.references
+        dynamic_prefixes |= file_symbols.dynamic_prefixes
 
     framework_classes = _framework_subclasses(files)
     candidates = []
@@ -90,6 +92,7 @@ def find_dead_code(files: list[FileSymbols]) -> list[DeadCodeCandidate]:
                 symbol,
                 is_test_file,
                 is_framework_class=symbol.qualified_name in framework_classes,
+                dynamic_prefix=_matching_prefix(symbol.name, dynamic_prefixes),
             )
             if verdict is not None:
                 confidence, reason = verdict
@@ -145,8 +148,17 @@ def _framework_subclasses(files: list[FileSymbols]) -> set[str]:
     return external
 
 
+def _matching_prefix(name: str, prefixes: set[str]) -> str | None:
+    """The longest dynamic prefix this name starts with, if any."""
+    matches = [p for p in prefixes if name.startswith(p)]
+    return max(matches, key=len) if matches else None
+
+
 def _classify(
-    symbol: Symbol, is_test_file: bool, is_framework_class: bool = False
+    symbol: Symbol,
+    is_test_file: bool,
+    is_framework_class: bool = False,
+    dynamic_prefix: str | None = None,
 ) -> tuple[Confidence, str] | None:
     """Decide how much to trust "this name never appears" for one symbol."""
     name = symbol.name
@@ -157,6 +169,12 @@ def _classify(
 
     if is_test_file or name.startswith(TEST_PREFIXES):
         return None
+
+    if dynamic_prefix is not None:
+        # Checked before the private-name rule: dispatch targets are usually
+        # private, and a dynamic call is much stronger evidence of use than a
+        # leading underscore is of the opposite.
+        return Confidence.LOW, f'may be reached dynamically via "{dynamic_prefix}"'
 
     if name in FRAMEWORK_NAMES:
         return Confidence.LOW, "name is a common external entry point"

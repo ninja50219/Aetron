@@ -28,7 +28,39 @@ def parse(text: str, rel_path: str) -> FileSymbols:
 
     _visit_body(tree.body, result, prefix="")
     result.references = _collect_references(tree)
+    result.dynamic_prefixes = _collect_dynamic_prefixes(tree)
     return result
+
+
+# Shorter fragments match half the project and destroy the signal.
+MIN_DYNAMIC_PREFIX = 3
+
+
+def _collect_dynamic_prefixes(tree: ast.AST) -> set[str]:
+    """String literals that are built into a name at runtime.
+
+    Found on a real false positive: CPython's _markupbase calls
+    getattr(self, "_parse_doctype_" + name), so four methods look unused to
+    any purely static reference scan. Rather than special-casing getattr, this
+    treats every literal concatenated with a non-literal as a name prefix,
+    which also covers f-strings and dispatch tables built in a loop.
+    """
+    prefixes: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = node.left
+            if isinstance(left, ast.Constant) and isinstance(left.value, str):
+                if len(left.value) >= MIN_DYNAMIC_PREFIX:
+                    prefixes.add(left.value)
+
+        elif isinstance(node, ast.JoinedStr) and node.values:
+            leading = node.values[0]
+            if isinstance(leading, ast.Constant) and isinstance(leading.value, str):
+                if len(leading.value) >= MIN_DYNAMIC_PREFIX:
+                    prefixes.add(leading.value)
+
+    return prefixes
 
 
 def _collect_references(tree: ast.AST) -> set[str]:
