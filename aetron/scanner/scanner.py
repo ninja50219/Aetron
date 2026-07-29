@@ -21,7 +21,12 @@ ProgressCallback = Callable[[int, str], None]
 
 @dataclass
 class FileInfo:
-    """A source file accepted by the scanner."""
+    """A source file accepted by the scanner.
+
+    ``rel_path`` always uses forward slashes, on every platform, so it can be
+    a stable key in a graph, a test and a serialised result alike. ``path`` is
+    the native path to use for actual file access.
+    """
 
     path: Path
     rel_path: str
@@ -154,19 +159,18 @@ def scan(
 
         for name in filenames:
             file_path = Path(dirpath) / name
-            rel_path = str(file_path.relative_to(root))
-            rel_posix = rel_path.replace(os.sep, "/")
+            rel_path = file_path.relative_to(root).as_posix()
 
             # A file can be interesting in three different ways, and being
             # none of them is the common case worth rejecting first.
             language = detect_language(file_path.suffix)
             manifest = is_manifest(name)
-            doc = is_doc_file(name, rel_posix)
+            doc = is_doc_file(name, rel_path)
 
             if language is None and not manifest and not doc:
                 continue
 
-            if stack.matches(rel_posix, is_dir=False):
+            if stack.matches(rel_path, is_dir=False):
                 result.skipped.append(SkippedFile(rel_path, "listed in .gitignore"))
                 continue
 

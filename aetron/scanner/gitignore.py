@@ -19,6 +19,27 @@ except ImportError:  # pragma: no cover - optional dependency
 
 GITIGNORE_NAME = ".gitignore"
 
+def _pick_pattern_factory() -> str:
+    """Choose the pattern style this pathspec version prefers.
+
+    pathspec renamed "gitwildmatch" to "gitignore"; the old name still works
+    but emits a DeprecationWarning. Probing beats a version comparison.
+    """
+    if not AVAILABLE:  # pragma: no cover - optional dependency
+        return "gitwildmatch"
+
+    for factory in ("gitignore", "gitwildmatch"):
+        try:
+            pathspec.PathSpec.from_lines(factory, ["probe"])
+        except Exception:
+            continue
+        return factory
+
+    return "gitwildmatch"  # pragma: no cover - pathspec changed more than expected
+
+
+PATTERN_FACTORY = _pick_pattern_factory()
+
 
 @dataclass
 class GitignoreStack:
@@ -31,7 +52,7 @@ class GitignoreStack:
         """Compile a .gitignore found in ``rel_dir``."""
         if not AVAILABLE:
             return
-        spec = pathspec.PathSpec.from_lines("gitwildmatch", text.splitlines())
+        spec = pathspec.PathSpec.from_lines(PATTERN_FACTORY, text.splitlines())
         if spec.patterns:
             self._specs.append((rel_dir, spec))
 
