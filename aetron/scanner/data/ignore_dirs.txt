@@ -1,0 +1,70 @@
+# Directories skipped entirely during a scan.
+# One entry per line, "#" starts a comment. Matching is case-insensitive.
+#
+#   node_modules          plain name, matched anywhere in the tree
+#   *.egg-info            wildcard name, matched anywhere in the tree
+#   /Library              only at the project root
+#   Library/PackageCache  path fragment, matched at any depth
+#
+# Prefer the anchored form for generic names like "Library" or "Temp", which
+# are generated output in one ecosystem and real source in another.
+
+# --- version control ---
+.git
+.hg
+.svn
+
+# --- python ---
+__pycache__
+.venv
+venv
+env
+.tox
+.nox
+.mypy_cache
+.pytest_cache
+.ruff_cache
+htmlcov
+*.egg-info
+
+# --- javascript / typescript ---
+node_modules
+bower_components
+.next
+.nuxt
+.turbo
+.parcel-cache
+
+# --- build output ---
+dist
+build
+out
+target
+bin
+obj
+coverage
+vendor
+
+# --- unity ---
+# Unity keeps only Assets, Packages and ProjectSettings under version control;
+# everything below is regenerated from those.
+Library/PackageCache
+/Library
+/Temp
+/Logs
+/UserSettings
+/MemoryCaptures
+/Recordings
+
+# --- unreal ---
+/Intermediate
+/DerivedDataCache
+/Saved
+/Binaries
+
+# --- editors and tooling ---
+.vs
+.idea
+.vscode
+.gradle
+.cache
