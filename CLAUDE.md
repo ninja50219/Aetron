@@ -24,23 +24,28 @@ each an order of magnitude more expensive than the last, and the model decides
 at each step whether escalating is worth it.
 
 ```
-question                                       cost      who decides
+question                                       cost         who decides
    |
    v
-L0  index        scan + filter + parse          free     Aetron, once
+L0  index        scan + filter + parse          free        Aetron, once
    |             never sent to the model
    v
-L1  search       ranked candidate files         ~tokens  model picks
-   |             with a match % and a reason
+L1  search       ranked candidate files         ~2 lines    model picks
+   |             with a match % and a reason    per candidate
    v
-L2  structure    JSON skeleton of one file      ~tokens  model confirms
-   |             symbols + line numbers, no bodies       x10
+L2  structure    skeleton of one file           ~13% of     model confirms
+   |             symbols + line numbers          the file
    v
-L3  source       the lines of one symbol        ~tokens  model answers
-   |                                                     x100
+L3  source       the lines of one symbol        one symbol  model answers
+   |                                            not one file
    v
 answer          "LoginController.cs:68"
 ```
+
+The middle two numbers are measured on this repository, not estimated: a
+skeleton runs about 13% of its file as text and about 25% as JSON. Text is the
+form to hand a model, because JSON repeats its keys once per symbol and a file
+that is mostly signatures can have a JSON skeleton *larger* than itself.
 
 **L0 — index.** The existing `scan` and `analyze` stages. The symbol index and
 import graph are built once and held by Aetron. They are the thing that makes
@@ -62,10 +67,10 @@ exists so the model can tell a direct hit from a guess — it is a ranking
 signal, not a probability, and it should never be presented to the user as one.
 
 **L2 — structure.** The model picks a candidate and asks for its shape. Aetron
-returns the file's skeleton as JSON: every symbol with its kind, name, line,
-end line, parameters and first docstring line, plus the file's imports. No
-bodies. This is close to a serialised `FileSymbols`, which already holds all of
-it.
+returns the file's skeleton: the module docstring as a header, then every
+symbol with its kind, name, line, end line, parameters and first docstring
+line, plus the file's imports and the project files on either side of it in the
+import graph. No bodies. Text by default, `--json` for a consumer that parses.
 
 The model reads the skeleton and decides: is the answer here, or was the
 candidate wrong? A wrong guess costs one skeleton, not one file.

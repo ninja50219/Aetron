@@ -3,6 +3,7 @@
 import pytest
 
 from aetron.scanner import scan
+from aetron.scanner.gitignore import AVAILABLE as gitignore_available
 from aetron.scanner.paths import InvalidPathError
 
 
@@ -20,7 +21,7 @@ class TestBasics:
         root = make_project({"app.py": "a = 1\nb = 2\nc = 3\n"})
         found = scan(root).files[0]
         assert found.language == "python"
-        assert found.lines == 4  # three lines plus the trailing newline
+        assert found.lines == 3  # a trailing newline ends a line, it does not add one
 
     def test_non_source_files_are_not_reported(self, make_project):
         root = make_project({"app.py": "x = 1\n", "logo.png": "binary-ish"})
@@ -83,6 +84,11 @@ class TestSkipReporting:
         assert rel_paths(result.files) == {"ok.py", "latin.py"}
 
 
+# pathspec is documented as optional and the scanner falls back to its own
+# rules without it. These tests are about what pathspec adds, so they have
+# nothing to assert when it is absent - failing there would report a missing
+# optional dependency as a broken scanner.
+@pytest.mark.skipif(not gitignore_available, reason="pathspec is not installed")
 class TestGitignore:
     def test_directory_pattern(self, make_project):
         root = make_project(

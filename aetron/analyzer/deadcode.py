@@ -79,6 +79,12 @@ def find_dead_code(files: list[FileSymbols]) -> list[DeadCodeCandidate]:
         is_test_file = any(marker in file_symbols.rel_path for marker in TEST_PATH_MARKERS)
 
         for symbol in file_symbols.symbols:
+            if symbol.kind == SymbolKind.MODULE:
+                # A file is not a definition anything calls by name. Whether a
+                # module is unused is what the import graph answers, and it
+                # answers it as an orphan rather than as dead code.
+                continue
+
             if symbol.name in used or symbol.qualified_name in used:
                 continue
 

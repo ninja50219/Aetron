@@ -6,6 +6,7 @@ FileSymbols, never raise.
 """
 
 import ast
+import re
 
 from .symbols import FileSymbols, ImportRef, Symbol, SymbolKind
 
@@ -26,10 +27,31 @@ def parse(text: str, rel_path: str) -> FileSymbols:
         result.parse_error = str(exc)
         return result
 
+    result.symbols.append(_build_module(tree, text, rel_path))
     _visit_body(tree.body, result, prefix="")
     result.references = _collect_references(tree)
     result.dynamic_prefixes = _collect_dynamic_prefixes(tree)
     return result
+
+
+def _build_module(tree: ast.Module, text: str, rel_path: str) -> Symbol:
+    """The file itself as a symbol, carrying its module docstring.
+
+    A module docstring is the one sentence saying what a whole file is for,
+    which makes it the most useful thing in the file to search and the most
+    useful line to put at the top of a skeleton. Nothing produced a MODULE
+    symbol before, so SymbolKind.MODULE existed while the best description of
+    every file went unindexed.
+    """
+    name = rel_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return Symbol(
+        name=name,
+        kind=SymbolKind.MODULE,
+        line=1,
+        end_line=len(text.splitlines()) or 1,
+        qualified_name=name,
+        docstring=ast.get_docstring(tree),
+    )
 
 
 # Shorter fragments match half the project and destroy the signal.
@@ -63,6 +85,11 @@ def _collect_dynamic_prefixes(tree: ast.AST) -> set[str]:
     return prefixes
 
 
+# A string that could name a definition: an identifier, or a dotted path of
+# them. Anything else is prose, a message, a path or a format string.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z")
+
+
 def _collect_references(tree: ast.AST) -> set[str]:
     """Every name the file reads, for answering "is this used anywhere?".
 
@@ -83,8 +110,13 @@ def _collect_references(tree: ast.AST) -> set[str]:
             references.update(alias.name for alias in node.names)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             # __all__ entries, getattr() targets and similar string references
-            # are the main source of false "unused" reports.
-            references.add(node.value)
+            # are the main source of false "unused" reports. Only strings that
+            # could actually name something count: a docstring is a string
+            # constant too, and admitting prose here meant any definition whose
+            # name happened to appear in a sentence was silently marked used -
+            # a false negative in dead code detection, and noise in search.
+            if _IDENTIFIER_RE.match(node.value):
+                references.add(node.value)
 
     return references
 

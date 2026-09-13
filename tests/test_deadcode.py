@@ -5,7 +5,9 @@ switched off, so most of these tests assert that something is *not* reported.
 """
 
 from aetron.analyzer import analyze
-from aetron.analyzer.deadcode import Confidence
+from aetron.analyzer.deadcode import Confidence, find_dead_code
+from aetron.analyzer.python_parser import parse
+from aetron.analyzer.symbols import SymbolKind
 from aetron.scanner import scan
 
 
@@ -151,3 +153,12 @@ class TestReporting:
             ("a.py", 4),
             ("b.py", 1),
         ]
+
+
+class TestModulesAreNotDeadCode:
+    def test_a_module_is_never_reported(self):
+        """A file is not a definition anything calls by name. Whether a module
+        is unused is the import graph's question, and it answers it as an
+        orphan rather than as dead code."""
+        candidates = find_dead_code([parse("x = 1\n", "lonely.py")])
+        assert all(c.symbol.kind != SymbolKind.MODULE for c in candidates)

@@ -137,6 +137,16 @@ def _circular_imports(analysis: AnalysisResult) -> list[Insight]:
     return findings
 
 
+def _defines_something(file_symbols) -> bool:
+    """Whether a file defines anything of its own.
+
+    Every parsed file carries a symbol for the module itself, so the presence
+    of symbols no longer distinguishes a real file from an empty __init__.py -
+    and an empty __init__.py is a package marker, not a leftover.
+    """
+    return any(s.kind != SymbolKind.MODULE for s in file_symbols.symbols)
+
+
 def _orphan_modules(analysis: AnalysisResult) -> list[Insight]:
     """Files that neither import anything local nor are imported."""
     orphans = sorted(
@@ -144,7 +154,7 @@ def _orphan_modules(analysis: AnalysisResult) -> list[Insight]:
         for f in analysis.files
         if not analysis.imports.get(f.rel_path)
         and not analysis.imported_by.get(f.rel_path)
-        and f.symbols  # an empty __init__.py is not an orphan, it is a marker
+        and _defines_something(f)
     )
 
     if not orphans:

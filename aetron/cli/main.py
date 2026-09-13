@@ -2,14 +2,25 @@
 
 Each pipeline stage gets a subcommand, so the tool stays usable while the
 later stages are still missing: "scan" answers what is in the project,
-"analyze" answers how it fits together.
+"analyze" answers how it fits together, and "summary" reduces both to what a
+newcomer reads first.
 
-TODO: once ai_providers lands, add an "ask" subcommand taking a question and a
-model. Recommendation: keep it a separate command rather than a flag on
-analyze, so the expensive path is always explicit.
+The three retrieval levels get a command each - "search", "structure" and
+"source" - rather than one command that walks them. That is not a convenience:
+the protocol's rule is that escalating to a more expensive level is always a
+decision someone makes, and a command that quietly ran all three would hide the
+decision it exists to expose. Run by hand they are also the clearest statement
+of the contract an ai_provider will drive.
+
+TODO: once ai_providers lands, add an "ask" subcommand that takes a question
+and a model and drives search -> structure -> source on the model's behalf.
+Recommendation: keep it a separate command rather than a flag on analyze, so
+the expensive path is always explicit, and have it print the levels it used so
+the cost of an answer stays visible.
 """
 
 import argparse
+import json
 import sys
 from collections import Counter
 from pathlib import Path
@@ -18,13 +29,17 @@ from aetron.analyzer import analyze
 from aetron.analyzer.analyzer import AnalysisResult
 from aetron.analyzer.deadcode import Confidence
 from aetron.analyzer.symbols import SymbolKind
+from aetron.context.search import DEFAULT_LIMIT, search
+from aetron.context.source import get_source
+from aetron.context.structure import build_structure, render
+from aetron.context.summary import build_summary
 from aetron.scanner import ScanResult, scan
 from aetron.scanner.gitignore import AVAILABLE as gitignore_available
 from aetron.scanner.paths import InvalidPathError, normalize_path
 
 PREVIEW_LIMIT = 5
 
-COMMANDS = ("scan", "analyze")
+COMMANDS = ("scan", "analyze", "summary", "search", "structure", "source")
 
 
 def prompt_for_path() -> Path:
@@ -196,6 +211,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--symbol", help="show every definition of a name and where it lives"
     )
 
+    subcommands.add_parser(
+        "summary", parents=[common], help="what a newcomer to this project reads first"
+    )
+
+    # The three retrieval levels. Each is its own command because escalating to
+    # a more expensive one is meant to be a decision, not a default.
+    machine = argparse.ArgumentParser(add_help=False)
+    machine.add_argument(
+        "--json", action="store_true", help="emit JSON rather than text"
+    )
+
+    search_command = subcommands.add_parser(
+        "search",
+        parents=[common, machine],
+        help="level 1: rank the files a question might be about",
+    )
+    search_command.add_argument("query", help="what to look for, e.g. 'login'")
+    search_command.add_argument(
+        "--limit", type=int, default=DEFAULT_LIMIT, help="how many candidates to return"
+    )
+
+    structure_command = subcommands.add_parser(
+        "structure",
+        parents=[common, machine],
+        help="level 2: the shape of one file, without its code",
+    )
+    structure_command.add_argument("file", help="a path as search reports it")
+
+    source_command = subcommands.add_parser(
+        "source",
+        parents=[common, machine],
+        help="level 3: the code of one definition",
+    )
+    source_command.add_argument("file", help="a path as search reports it")
+    source_command.add_argument("symbol", help="a name as structure reports it")
+
     return parser
 
 
@@ -254,6 +305,122 @@ def command_analyze(args, root: Path) -> None:
         print_dead_code(result, Confidence(args.confidence))
 
 
+def command_summary(args, root: Path) -> None:
+    scan_result = run_scan(args, root)
+    summary = build_summary(scan_result, analyze(scan_result))
+
+    print(f"{summary.name}: {summary.file_count} files, {summary.line_count} lines")
+    if summary.primary_language:
+        languages = ", ".join(
+            f"{name} {count}" for name, count in sorted(
+                summary.languages.items(), key=lambda item: -item[1]
+            )[:5]
+        )
+        print(f"Languages: {languages}")
+
+    if summary.symbol_counts:
+        counts = ", ".join(f"{kind} {n}" for kind, n in summary.symbol_counts.items())
+        print(f"Symbols: {counts}")
+        print(f"Import edges: {summary.import_edges}")
+
+    if summary.notable_dependencies:
+        print(f"\nDependencies: {', '.join(summary.notable_dependencies)}")
+
+    if summary.key_files:
+        print("\nStart reading here:")
+        for file_summary in summary.key_files[:PREVIEW_LIMIT]:
+            print(
+                f"  {file_summary.rel_path:<48} "
+                f"{file_summary.dependents} dependents, {file_summary.symbols} symbols"
+            )
+
+    if summary.insights:
+        print("\nFindings:")
+        for insight in summary.insights:
+            print(f"  [{insight.severity.value}] {insight.summary}")
+            if insight.files:
+                print(f"      {', '.join(insight.files[:3])}")
+
+    if summary.unparsed_languages:
+        unparsed = ", ".join(
+            f"{suffix} x{n}" for suffix, n in summary.unparsed_languages.items()
+        )
+        print(f"\nNo parser yet: {unparsed}")
+
+
+def command_search(args, root: Path) -> None:
+    """Level 1: rank the files a question might be about."""
+    scan_result = run_scan(args, root)
+    candidates = search(scan_result, analyze(scan_result), args.query, limit=args.limit)
+
+    if args.json:
+        print(json.dumps([
+            {
+                "rel_path": c.rel_path,
+                "score": round(c.score, 4),
+                "percent": c.percent,
+                "language": c.language,
+                "parsed": c.parsed,
+                "line": c.best_line,
+                "reason": c.reason,
+            }
+            for c in candidates
+        ], indent=2))
+        return
+
+    if not candidates:
+        print(f"Nothing in this project matches '{args.query}'.")
+        return
+
+    print(f"Candidates for '{args.query}':\n")
+    for candidate in candidates:
+        location = f":{candidate.best_line}" if candidate.best_line else ""
+        note = "" if candidate.parsed else "  [no parser for this language]"
+        print(f"  {candidate.percent:>3}%  {candidate.rel_path}{location}")
+        print(f"        {candidate.reason}{note}")
+
+
+def command_structure(args, root: Path) -> None:
+    """Level 2: the shape of one file, with no code in it."""
+    scan_result = run_scan(args, root)
+    structure = build_structure(scan_result, analyze(scan_result), args.file)
+
+    if args.json:
+        print(json.dumps(structure.to_dict(), indent=2))
+        return
+
+    print(render(structure))
+
+
+def command_source(args, root: Path) -> None:
+    """Level 3: the code of one definition."""
+    scan_result = run_scan(args, root)
+    result = get_source(scan_result, analyze(scan_result), args.file, args.symbol)
+
+    if args.json:
+        print(json.dumps({
+            "rel_path": result.rel_path,
+            "qualified_name": result.qualified_name,
+            "kind": result.kind,
+            "line": result.line,
+            "end_line": result.end_line,
+            "start_line": result.start_line,
+            "location": result.location,
+            "text": result.text,
+            "problem": result.problem,
+        }, indent=2))
+        return
+
+    if result.problem:
+        print(f"{result.rel_path}: {result.problem}")
+        if not result.text:
+            return
+        print()
+
+    print(f"{result.kind} {result.qualified_name} - {result.location}\n")
+    print(result.numbered())
+
+
 def main() -> None:
     parser = build_parser()
 
@@ -271,10 +438,14 @@ def main() -> None:
 
     root = resolve_root(parser, args.path)
 
-    if args.command == "analyze":
-        command_analyze(args, root)
-    else:
-        command_scan(args, root)
+    handlers = {
+        "analyze": command_analyze,
+        "summary": command_summary,
+        "search": command_search,
+        "structure": command_structure,
+        "source": command_source,
+    }
+    handlers.get(args.command, command_scan)(args, root)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,16 @@ from aetron.analyzer.python_parser import parse
 from aetron.analyzer.symbols import SymbolKind
 
 
+def named(result, name):
+    """The one symbol with this name. Every file also carries a symbol for the
+    module itself, so indexing by position no longer identifies a definition."""
+    return next(s for s in result.symbols if s.name == name)
+
+
+def definitions(result):
+    """Every symbol except the one standing for the module."""
+    return [s for s in result.symbols if s.kind != SymbolKind.MODULE]
+
 def kinds(result, kind):
     return [s.qualified_name for s in result.of_kind(kind)]
 
@@ -40,11 +50,12 @@ class TestDefinitions:
         assert symbol.parameters == ["a", "b", "c", "*args", "**kwargs"]
 
     def test_docstring_is_captured(self):
-        symbol = parse('def f():\n    """Does a thing."""\n', "a.py").symbols[0]
-        assert symbol.docstring == "Does a thing."
+        result = parse('def f():\n    """Does a thing."""\n', "a.py")
+        assert named(result, "f").docstring == "Does a thing."
 
     def test_line_range(self):
-        symbol = parse("\n\ndef f():\n    x = 1\n    return x\n", "a.py").symbols[0]
+        result = parse("\n\ndef f():\n    x = 1\n    return x\n", "a.py")
+        symbol = named(result, "f")
         assert (symbol.line, symbol.end_line) == (3, 5)
 
 
@@ -102,4 +113,28 @@ class TestRobustness:
     def test_empty_file(self):
         result = parse("", "a.py")
         assert result.parse_error is None
-        assert result.symbols == []
+        assert definitions(result) == []
+
+
+class TestModuleSymbol:
+    """Every parsed file carries a symbol for itself, holding the one sentence
+    that says what the whole file is for."""
+
+    def test_the_module_is_a_symbol(self):
+        result = parse('"""What this file is for."""\n', "pkg/thing.py")
+        module = next(s for s in result.symbols if s.kind == SymbolKind.MODULE)
+        assert module.name == "thing"
+        assert module.docstring == "What this file is for."
+
+    def test_a_file_without_a_docstring_still_has_one(self):
+        result = parse("x = 1\n", "a.py")
+        module = next(s for s in result.symbols if s.kind == SymbolKind.MODULE)
+        assert module.docstring is None
+
+    def test_the_module_spans_the_whole_file(self):
+        result = parse("x = 1\ny = 2\nz = 3\n", "a.py")
+        module = next(s for s in result.symbols if s.kind == SymbolKind.MODULE)
+        assert (module.line, module.end_line) == (1, 3)
+
+    def test_a_file_that_will_not_parse_has_no_module_symbol(self):
+        assert parse("def broken(:\n", "a.py").symbols == []
