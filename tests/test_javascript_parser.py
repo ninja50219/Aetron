@@ -230,3 +230,21 @@ class TestRobustness:
             s for s in parse("", "src/App.tsx").symbols if s.kind == SymbolKind.MODULE
         )
         assert module.name == "App"
+
+class TestAllmanBraces:
+    """Rare in this language but valid, and the fix for one-line types must not
+    assume a declaration line always carries its own brace."""
+
+    SOURCE = (
+        "class Empty { }\n\n"
+        "class Real\n{\n  wanted() { return 1; }\n}\n\n"
+        "class AlsoReal\n{\n  alsoWanted() { }\n}\n"
+    )
+
+    def test_a_brace_on_the_next_line_still_opens_a_body(self):
+        assert "wanted" in names(parse(self.SOURCE, "a.js"))
+
+    def test_a_later_class_is_not_nested_in_an_empty_one(self):
+        assert named(parse(self.SOURCE, "a.js"), "alsoWanted").qualified_name == (
+            "AlsoReal.alsoWanted"
+        )

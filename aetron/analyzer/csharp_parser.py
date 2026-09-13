@@ -350,11 +350,23 @@ def _collect_symbols(lines: list[str]) -> list[Symbol]:
         namespace = _NAMESPACE_RE.match(line)
         type_decl = _TYPE_DECL_RE.match(line)
 
+        # A declaration whose block opens and closes on the same line -
+        # "class Empty { }" - has no body for anything to be inside. Pushing
+        # a scope for it left one that could never be entered and so could
+        # never be popped, and every later declaration in the file was nested
+        # inside it, corrupting its qualified name. A line with no brace at
+        # all still opens a scope: the brace is on the next line, which is how
+        # much of this language is written.
+        opens_a_body = "{" not in line or line.count("{") > line.count("}")
+
         if namespace:
             # Namespaces qualify nothing here: a C# namespace is not the file,
             # and prefixing every class with it would make every qualified name
             # differ from what a reader would type.
-            scopes.append(_Scope(depth, namespace.group(1), is_type=False))
+            if opens_a_body or line.rstrip().endswith(";"):
+                # A file-scoped namespace ends in a semicolon and governs
+                # the rest of the file, so it opens a body of a kind.
+                scopes.append(_Scope(depth, namespace.group(1), is_type=False))
 
         elif type_decl:
             name, primary, bases = (
@@ -371,7 +383,8 @@ def _collect_symbols(lines: list[str]) -> list[Symbol]:
                 bases=_bases(bases),
                 parameters=_parameters(primary[1:-1]) if primary else [],
             )
-            scopes.append(_Scope(depth, symbol.qualified_name, is_type=True))
+            if opens_a_body:
+                scopes.append(_Scope(depth, symbol.qualified_name, is_type=True))
 
         elif in_type_body:
             symbol = _member(_logical_line(lines, number), number, lines, prefix)

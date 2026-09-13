@@ -359,11 +359,14 @@ def _collect_symbols(lines: list[str]) -> list[Symbol]:
         elif at_top_level:
             symbol, scope = _declaration(lines, number, line, prefix)
             # A declaration whose block opens and closes on the same line -
-            # "enum Status { Ok, Failed }" - has no body for anything to be
-            # inside. Pushing a scope for it left one that could never be
-            # entered and so could never be popped, and every later line in
-            # the file was judged against it.
-            if scope is not None and line.count("{") > line.count("}"):
+            # "class Empty { }", "enum Status { Ok }" - has no body for
+            # anything to be inside. Pushing a scope for it left one that
+            # could never be entered and so could never be popped, and every
+            # later declaration in the file was nested inside it. A line with
+            # no brace at all still opens a scope: the brace is on the next
+            # line, which is how much of this language is written.
+            opens_a_body = "{" not in line or line.count("{") > line.count("}")
+            if scope is not None and opens_a_body:
                 scopes.append(_Scope(depth, scope[0], is_type=scope[1]))
 
         if symbol is not None:

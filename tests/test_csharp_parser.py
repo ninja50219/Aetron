@@ -311,3 +311,39 @@ class TestAwkwardDeclarations:
     def test_a_wrapped_signature_spans_to_its_body(self):
         symbol = named(parse(TRICKY, "a.cs"), "Create")
         assert symbol.end_line > symbol.line + 2
+
+class TestOneLineTypesDoNotSwallowTheFile:
+    """A type whose braces open and close on one line has no body. Treating it
+    as a scope left one that could never be popped, so every later declaration
+    in the file was nested inside it and got the wrong qualified name."""
+
+    SOURCE = (
+        "public class Empty { }\n\n"
+        "public class Real\n{\n    public void Wanted() { }\n}\n\n"
+        "public interface IMarker { }\n\n"
+        "public class AlsoReal\n{\n    public void AlsoWanted() { }\n}\n"
+    )
+
+    def test_a_later_class_is_not_nested_in_an_empty_one(self):
+        assert named(parse(self.SOURCE, "a.cs"), "Real").qualified_name == "Real"
+
+    def test_a_later_method_keeps_its_own_qualified_name(self):
+        assert named(parse(self.SOURCE, "a.cs"), "Wanted").qualified_name == (
+            "Real.Wanted"
+        )
+
+    def test_an_empty_interface_does_not_capture_what_follows(self):
+        assert named(parse(self.SOURCE, "a.cs"), "AlsoWanted").qualified_name == (
+            "AlsoReal.AlsoWanted"
+        )
+
+    def test_a_brace_on_the_next_line_still_opens_a_body(self):
+        """The common style in this language, and the reason the test is not
+        simply "a line with no opening brace opens nothing"."""
+        assert "Wanted" in names(parse(self.SOURCE, "a.cs"))
+
+    def test_both_namespace_forms_still_work(self):
+        braced = "namespace App\n{\n    public class T\n    {\n        public void Go() { }\n    }\n}\n"
+        scoped = "namespace App;\n\npublic class T\n{\n    public void Go() { }\n}\n"
+        for source in (braced, scoped):
+            assert named(parse(source, "a.cs"), "Go").qualified_name == "T.Go"
