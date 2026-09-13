@@ -250,6 +250,22 @@ def ask(
             messages.append(Message(role="user", content=step.observation))
             continue
 
+        if command == "ANSWER" and not argument.strip():
+            # A bare ANSWER would end the loop with nothing to show and no
+            # error, which reads to the caller as a successful empty answer.
+            step = Step(
+                command="ANSWER",
+                argument="",
+                observation="ANSWER needs the answer after it.",
+                refused=True,
+            )
+            answer.steps.append(step)
+            if on_step:
+                on_step(step)
+            messages.append(Message(role="assistant", content="ANSWER"))
+            messages.append(Message(role="user", content=step.observation))
+            continue
+
         if command == "ANSWER":
             answer.text = argument
             step = Step(command=command, argument="", observation=argument)

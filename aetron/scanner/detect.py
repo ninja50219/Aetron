@@ -38,6 +38,20 @@ def _has_generated_banner(text: str) -> bool:
     return False
 
 
+# Editors on Windows - Visual Studio among them, by default - write a byte
+# order mark at the start of a UTF-8 file. Decoding as plain "utf-8" leaves it
+# in the text as U+FEFF, where Python's ast rejects it as a non-printable
+# character and every C# pattern fails to match the first declaration. Reading
+# as "utf-8-sig" removes it when present and is identical to "utf-8" when it is
+# not. This matters more now that C# is parsed than it did before.
+SOURCE_ENCODING = "utf-8-sig"
+
+
+def read_source(path) -> str:
+    """Read a source file the way every stage of Aetron should read one."""
+    return path.read_text(encoding=SOURCE_ENCODING, errors="replace")
+
+
 def count_lines(text: str) -> int:
     """How many lines a file has, the way every other tool counts them.
 

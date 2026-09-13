@@ -203,6 +203,15 @@ class TestWhenThingsGoWrong:
         assert answer.text == ""
         assert "not running" in answer.incomplete
 
+    def test_an_empty_answer_is_not_an_answer(self, project):
+        """It would otherwise end the loop with nothing to show and no error,
+        which reads as a successful empty answer."""
+        scan_result, analysis = project()
+        model = Scripted("ANSWER", "ANSWER auth/login.py line 2")
+        answer = ask(model, scan_result, analysis, "q")
+        assert answer.steps[0].refused
+        assert answer.text == "auth/login.py line 2"
+
     def test_a_search_that_finds_nothing_says_so(self, project):
         scan_result, analysis = project()
         model = Scripted("SEARCH kubernetes", "ANSWER not in this project")

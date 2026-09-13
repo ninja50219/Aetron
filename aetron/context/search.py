@@ -246,6 +246,11 @@ def _score_symbols(
             lowered = symbol.name.lower()
             detail = _describe(symbol.kind, symbol.name, symbol.qualified_name)
 
+            # Split once per symbol, not once per symbol per term. A docstring
+            # is the longest string in the loop and splitting it repeatedly was
+            # most of what a search cost.
+            docstring_words = set(words(symbol.docstring)) if symbol.docstring else ()
+
             # Compared on words, not on the raw name: login_handler,
             # loginHandler and LoginHandler are one name spelled three ways,
             # and "login handler" is the same name spelled a fourth.
@@ -271,7 +276,7 @@ def _score_symbols(
                     evidence.add(
                         file_symbols.rel_path, "symbol_partial", detail, term, symbol.line
                     )
-                elif symbol.docstring and term in words(symbol.docstring):
+                elif term in docstring_words:
                     evidence.add(
                         file_symbols.rel_path,
                         "docstring",
@@ -290,17 +295,24 @@ def _score_references(
     login in a way worth mentioning, but the file that *defines* it is the
     answer, and this must never outrank that.
     """
+    wanted = set(terms)
+
     for file_symbols in analysis.files:
+        # One pass over the references builds a word index for the file, so
+        # each term is a lookup rather than another pass. A large file has
+        # thousands of references and this used to run once per term.
+        by_word: dict[str, str] = {}
+        for reference in file_symbols.references:
+            for word in words(reference):
+                if word not in wanted:
+                    continue
+                if word not in by_word or reference < by_word[word]:
+                    by_word[word] = reference
+
         for term in terms:
-            hits = sorted(
-                reference
-                for reference in file_symbols.references
-                if term in words(reference)
-            )
-            if hits:
-                evidence.add(
-                    file_symbols.rel_path, "reference", f"uses {hits[0]}", term
-                )
+            hit = by_word.get(term)
+            if hit is not None:
+                evidence.add(file_symbols.rel_path, "reference", f"uses {hit}", term)
 
 
 def _score_paths(

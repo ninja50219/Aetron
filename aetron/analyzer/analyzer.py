@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from aetron.scanner.detect import read_source
 from aetron.scanner.scanner import ScanResult
 
 from . import csharp_parser, python_parser
@@ -83,7 +84,7 @@ def analyze(
             on_progress(position, file_info.rel_path)
 
         try:
-            text = file_info.path.read_text(encoding="utf-8", errors="replace")
+            text = read_source(file_info.path)
         except OSError as exc:
             result.files.append(
                 FileSymbols(

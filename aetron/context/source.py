@@ -22,6 +22,7 @@ from pathlib import Path
 
 from aetron.analyzer.analyzer import AnalysisResult
 from aetron.analyzer.symbols import Symbol
+from aetron.scanner.detect import read_source
 from aetron.scanner.scanner import ScanResult
 
 # How many attached lines above a definition to keep. Decorators and the
@@ -144,7 +145,7 @@ def get_source(
         return result
 
     try:
-        text = Path(scanned.path).read_text(encoding="utf-8", errors="replace")
+        text = read_source(Path(scanned.path))
     except OSError as exc:
         result.problem = f"unreadable: {exc.strerror}"
         return result

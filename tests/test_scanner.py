@@ -77,6 +77,29 @@ class TestSkipReporting:
         assert rel_paths(result.files) == {"legacy.py"}
         assert result.skipped == []
 
+    def test_a_byte_order_mark_does_not_break_parsing(self, make_project):
+        """Editors on Windows write one by default. Left in the text it is a
+        non-printable character that Python's ast rejects outright."""
+        from aetron.analyzer import analyze
+
+        root = make_project({"ok.py": "x = 1\n"})
+        (root / "bom.py").write_bytes(b"\xef\xbb\xbfdef with_bom():\n    pass\n")
+        result = analyze(scan(root))
+        assert result.parse_errors == []
+        assert any(
+            s.name == "with_bom" for f in result.files for s in f.symbols
+        )
+
+    def test_a_byte_order_mark_on_a_csharp_file(self, make_project):
+        from aetron.analyzer import analyze
+
+        root = make_project({"ok.py": "x = 1\n"})
+        (root / "Thing.cs").write_bytes(
+            b"\xef\xbb\xbfpublic class Thing\n{\n    public void Go() { }\n}\n"
+        )
+        result = analyze(scan(root))
+        assert any(s.name == "Thing" for f in result.files for s in f.symbols)
+
     def test_undecodable_bytes_do_not_end_the_scan(self, make_project):
         root = make_project({"ok.py": "x = 1\n"})
         (root / "latin.py").write_bytes(b"# nag\xf3wek\nx = 1\n")
