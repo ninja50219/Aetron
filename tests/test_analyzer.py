@@ -34,10 +34,10 @@ class TestSymbolCollection:
         assert len(analyze_project(root).find("run")) == 2
 
     def test_unsupported_language_is_listed_not_parsed(self, make_project):
-        root = make_project({"a.py": "x = 1\n", "Main.cs": "class Main {}\n"})
+        root = make_project({"a.py": "x = 1\n", "main.go": "package main\n"})
         result = analyze_project(root)
         assert [f.rel_path for f in result.files] == ["a.py"]
-        assert result.unparsed == ["Main.cs"]
+        assert result.unparsed == ["main.go"]
 
 
 class TestImportGraph:

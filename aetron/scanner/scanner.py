@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .detect import HARD_SIZE_LIMIT, generated_reason
+from .detect import HARD_SIZE_LIMIT, count_lines, generated_reason, read_source
 from .docs import is_doc_file
 from .gitignore import AVAILABLE as gitignore_available
 from .gitignore import GITIGNORE_NAME, GitignoreStack
@@ -191,7 +191,7 @@ def scan(
                 continue
 
             try:
-                text = file_path.read_text(encoding="utf-8", errors="replace")
+                text = read_source(file_path)
             except OSError as exc:
                 result.skipped.append(SkippedFile(rel_path, f"unreadable: {exc.strerror}"))
                 continue
@@ -201,7 +201,7 @@ def scan(
 
             if doc:
                 result.docs.append(
-                    DocFile(rel_path=rel_path, size=size, lines=text.count("\n") + 1)
+                    DocFile(rel_path=rel_path, size=size, lines=count_lines(text))
                 )
                 continue
 
@@ -219,7 +219,7 @@ def scan(
                     rel_path=rel_path,
                     language=language,
                     size=size,
-                    lines=text.count("\n") + 1,
+                    lines=count_lines(text),
                 )
             )
 

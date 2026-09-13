@@ -15,7 +15,7 @@ class TestSize:
     def test_counts_files_and_lines(self, make_project):
         summary = summarise(make_project, {"a.py": "x = 1\n", "b.py": "x = 1\ny = 2\n"})
         assert summary.file_count == 2
-        assert summary.line_count == 5  # two lines plus a trailing newline each
+        assert summary.line_count == 3
 
     def test_languages_are_counted(self, make_project):
         layout = {"a.py": "x = 1\n", "b.py": "x = 1\n", "c.js": "let x = 1;\n"}
@@ -37,7 +37,10 @@ class TestStructure:
     def test_symbol_counts(self, make_project):
         layout = {"a.py": "class A:\n    def m(self):\n        pass\n\ndef f():\n    pass\n"}
         summary = summarise(make_project, layout)
-        assert summary.symbol_counts == {"class": 1, "method": 1, "function": 1}
+        # "module" counts the file itself, which every parsed file carries.
+        assert summary.symbol_counts == {
+            "module": 1, "class": 1, "method": 1, "function": 1
+        }
 
     def test_kinds_with_no_symbols_are_omitted(self, make_project):
         summary = summarise(make_project, {"a.py": "def f():\n    pass\n"})
@@ -112,8 +115,8 @@ class TestFindings:
 
     def test_unparsed_languages_are_reported(self, make_project):
         # Being explicit about coverage beats letting a reader assume it.
-        layout = {"a.py": "x = 1\n", "Main.cs": "class M {}\n", "Other.cs": "class O {}\n"}
-        assert summarise(make_project, layout).unparsed_languages == {".cs": 2}
+        layout = {"a.py": "x = 1\n", "main.go": "package main\n", "b.go": "package b\n"}
+        assert summarise(make_project, layout).unparsed_languages == {".go": 2}
 
     def test_fully_parsed_project_reports_none(self, make_project):
         assert summarise(make_project, {"a.py": "x = 1\n"}).unparsed_languages == {}

@@ -38,6 +38,32 @@ def _has_generated_banner(text: str) -> bool:
     return False
 
 
+# Editors on Windows - Visual Studio among them, by default - write a byte
+# order mark at the start of a UTF-8 file. Decoding as plain "utf-8" leaves it
+# in the text as U+FEFF, where Python's ast rejects it as a non-printable
+# character and every C# pattern fails to match the first declaration. Reading
+# as "utf-8-sig" removes it when present and is identical to "utf-8" when it is
+# not. This matters more now that C# is parsed than it did before.
+SOURCE_ENCODING = "utf-8-sig"
+
+
+def read_source(path) -> str:
+    """Read a source file the way every stage of Aetron should read one."""
+    return path.read_text(encoding=SOURCE_ENCODING, errors="replace")
+
+
+def count_lines(text: str) -> int:
+    """How many lines a file has, the way every other tool counts them.
+
+    A trailing newline ends the last line, it does not start another one, so
+    "x = 1\n" is one line. Counting newlines and adding one made every file in
+    the project one line longer than it is, which inflated every reported total
+    and - worse - halved the average line length of a single-line file, letting
+    minified files through the check below.
+    """
+    return len(text.splitlines())
+
+
 def generated_reason(name: str, text: str) -> str | None:
     """Return why a file looks generated, or None if it looks hand-written."""
     lowered_name = name.lower()
@@ -47,8 +73,8 @@ def generated_reason(name: str, text: str) -> str | None:
     if _has_generated_banner(text):
         return "generated header"
 
-    lines = text.count("\n") + 1
-    if len(text) / lines > MAX_AVG_LINE_LENGTH:
+    lines = count_lines(text)
+    if lines and len(text) / lines > MAX_AVG_LINE_LENGTH:
         return "minified (long lines)"
 
     return None

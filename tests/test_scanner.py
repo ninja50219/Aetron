@@ -3,6 +3,7 @@
 import pytest
 
 from aetron.scanner import scan
+from aetron.scanner.gitignore import AVAILABLE as gitignore_available
 from aetron.scanner.paths import InvalidPathError
 
 
@@ -20,7 +21,7 @@ class TestBasics:
         root = make_project({"app.py": "a = 1\nb = 2\nc = 3\n"})
         found = scan(root).files[0]
         assert found.language == "python"
-        assert found.lines == 4  # three lines plus the trailing newline
+        assert found.lines == 3  # a trailing newline ends a line, it does not add one
 
     def test_non_source_files_are_not_reported(self, make_project):
         root = make_project({"app.py": "x = 1\n", "logo.png": "binary-ish"})
@@ -76,6 +77,29 @@ class TestSkipReporting:
         assert rel_paths(result.files) == {"legacy.py"}
         assert result.skipped == []
 
+    def test_a_byte_order_mark_does_not_break_parsing(self, make_project):
+        """Editors on Windows write one by default. Left in the text it is a
+        non-printable character that Python's ast rejects outright."""
+        from aetron.analyzer import analyze
+
+        root = make_project({"ok.py": "x = 1\n"})
+        (root / "bom.py").write_bytes(b"\xef\xbb\xbfdef with_bom():\n    pass\n")
+        result = analyze(scan(root))
+        assert result.parse_errors == []
+        assert any(
+            s.name == "with_bom" for f in result.files for s in f.symbols
+        )
+
+    def test_a_byte_order_mark_on_a_csharp_file(self, make_project):
+        from aetron.analyzer import analyze
+
+        root = make_project({"ok.py": "x = 1\n"})
+        (root / "Thing.cs").write_bytes(
+            b"\xef\xbb\xbfpublic class Thing\n{\n    public void Go() { }\n}\n"
+        )
+        result = analyze(scan(root))
+        assert any(s.name == "Thing" for f in result.files for s in f.symbols)
+
     def test_undecodable_bytes_do_not_end_the_scan(self, make_project):
         root = make_project({"ok.py": "x = 1\n"})
         (root / "latin.py").write_bytes(b"# nag\xf3wek\nx = 1\n")
@@ -83,6 +107,11 @@ class TestSkipReporting:
         assert rel_paths(result.files) == {"ok.py", "latin.py"}
 
 
+# pathspec is documented as optional and the scanner falls back to its own
+# rules without it. These tests are about what pathspec adds, so they have
+# nothing to assert when it is absent - failing there would report a missing
+# optional dependency as a broken scanner.
+@pytest.mark.skipif(not gitignore_available, reason="pathspec is not installed")
 class TestGitignore:
     def test_directory_pattern(self, make_project):
         root = make_project(
