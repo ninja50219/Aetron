@@ -8,15 +8,15 @@ being handed every line of it.
 ## Project Status
 
 Early development, but the whole pipeline now runs end to end: you can ask a
-question in English and get back a file and a line number. Python and C# are
-parsed; the other thirteen languages the scanner recognises are found by name
-but not yet read.
+question in English and get back a file and a line number. Python, C#, JavaScript and
+TypeScript are parsed; the other ten languages the scanner recognises are found
+by name but not yet read.
 
 | Stage | Module | Status |
 |---|---|---|
 | Scan the project | `aetron/scanner` | working |
 | Filter noise and generated code | `aetron/scanner` | working |
-| Parse structure into symbols | `aetron/analyzer` | working (Python, C#) |
+| Parse structure into symbols | `aetron/analyzer` | working (Python, C#, JS/TS) |
 | Link files, imports, inheritance | `aetron/analyzer` | working |
 | Build an optimised representation | `aetron/context` | working |
 | Send only relevant context to a model | `aetron/ai_providers` | working (Ollama, Claude) |
@@ -55,10 +55,10 @@ output and editor state.
 - [x] Ranked file search with a match percentage and the reason for it
 - [x] File skeletons: every definition and its line numbers, no code
 - [x] Source retrieval one definition at a time
-- [x] C# parser
+- [x] C#, JavaScript and TypeScript parsers
 - [x] Support for local models (Ollama: Llama, Qwen, DeepSeek)
 - [x] Support for API models (Claude)
-- [ ] Parsers for the other thirteen languages
+- [ ] Parsers for the remaining ten languages
 - [ ] GPT and Gemini providers
 - [ ] Documentation generation
 - [ ] Potential bug detection
@@ -198,12 +198,21 @@ aetron/
 │   └── scanner.py    the walk itself; all file I/O lives here
 ├── analyzer/         turn source into structure
 │   ├── symbols.py    the vocabulary every language parser produces
-│   ├── python_parser.py  Python, via the standard ast module
-│   ├── resolver.py   imports -> edges between files
+│   ├── python_parser.py      Python, via the standard ast module
+│   ├── csharp_parser.py      C#, by pattern and brace counting
+│   ├── javascript_parser.py  JavaScript and TypeScript, the same way
+│   ├── references.py  a declaration is not a use of itself
+│   ├── resolver.py   imports -> edges, dotted modules and paths alike
 │   ├── deadcode.py   unused definitions, with confidence levels
 │   └── analyzer.py   parse every file, then link them
-├── context/          not started
-├── ai_providers/     not started
+├── context/          the retrieval protocol
+│   ├── search.py     level 1: rank files, with the reason for each
+│   ├── structure.py  level 2: one file's shape, no code
+│   ├── source.py     level 3: one definition's code
+│   ├── insights.py   cycles, orphans, hubs
+│   └── summary.py    what a newcomer reads first
+├── ai_providers/     local models and API models, behind one method
+├── ask.py            the model drives the levels; the rules are enforced here
 └── cli/              argument parsing and reporting
 ```
 

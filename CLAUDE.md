@@ -116,7 +116,7 @@ changing anything below.
 ```
 aetron/
 ├── scanner/      walk the tree, decide what counts as source      DONE
-├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#)
+├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#, JS/TS)
 ├── context/      the retrieval protocol, L1-L3, plus summary      DONE
 ├── ai_providers/ local and API models, behind one method          DONE
 ├── ask.py        the model drives L1-L3; the only module that
@@ -134,17 +134,20 @@ standard library, not by reading the README.
 - `scanner/` — tree walk, four kinds of ignore rule anchored to detected
   project roots, `.gitignore` via `pathspec`, generated and minified detection,
   dependency manifests for eight ecosystems, docs collected separately.
-- `analyzer/` — Python via `ast`, C# by pattern and brace counting; import
-  resolution, entry points, dead code graded high/medium/low.
+- `analyzer/` — Python via `ast`; C#, JavaScript and TypeScript by pattern
+  and brace counting. Import resolution for both dotted modules and path-style
+  specifiers, entry points, dead code graded high/medium/low.
 - `context/` — all three retrieval levels, plus `insights` and `summary`.
 - `cli/` — `scan`, `analyze`, `summary`, `search`, `structure`, `source`.
 
 **Not built — this is the work:**
 
-1. **Parsers for the other thirteen languages** `EXTENSION_MAP` knows.
-   `PARSERS` in `analyzer/analyzer.py` has two entries. Adding one is a parser
-   plus a line in that dict; `csharp_parser.py` is the worked example for a
-   language with no parser in the standard library.
+1. **Parsers for the remaining ten languages** `EXTENSION_MAP` knows — Java,
+   Go, Rust, Ruby, PHP, C, C++, Kotlin, Swift, Lua, Scala, Dart. `PARSERS` in
+   `analyzer/analyzer.py` has four entries. Adding one is a parser plus a line
+   in that dict; `csharp_parser.py` is the worked example for a curly-brace
+   language and `javascript_parser.py` for one with many ways to spell the
+   same declaration.
 2. **Documentation generation** and **potential bug detection**, from the
    README checklist.
 3. **More providers.** `ai_providers/` has Ollama and Anthropic. A provider is
@@ -152,12 +155,17 @@ standard library, not by reading the README.
 
 **Known limits, worth knowing before trusting output:**
 
-- The C# parser is not a compiler and cannot be. It does not resolve types or
+- The C# and JavaScript parsers are not compilers and cannot be. It does not resolve types or
   expand generics, and a construct written in a way its patterns do not
   anticipate is missed. It is built to fail by omission: a missed method costs
   a search result, an invented one sends a reader to a line that means
-  something else. Add a test to `tests/test_csharp_parser.py` for anything it
+  something else. Add a test to the language's test file for anything one
   misses rather than loosening a pattern until something matches.
+- A pattern-based parser cannot tell a declaration from a use, so both run
+  their identifier counts through `analyzer/references.py`, which spends one
+  occurrence per declaration. Any future parser of this kind must do the same,
+  or every definition becomes its own user and dead code detection silently
+  reports nothing.
 - C# `using` directives name namespaces, not files, so a C#-only project has a
   symbol index but almost no import graph. Entry points and hub files are
   correspondingly weak there.

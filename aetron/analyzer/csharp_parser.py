@@ -26,6 +26,7 @@ swallow the rest of the project's understanding of it.
 import re
 from dataclasses import dataclass
 
+from .references import references_excluding_declarations
 from .symbols import FileSymbols, ImportRef, Symbol, SymbolKind
 
 LANGUAGE = "csharp"
@@ -154,7 +155,9 @@ def parse(text: str, rel_path: str) -> FileSymbols:
 
     result.imports = _collect_usings(lines)
     result.symbols.extend(_collect_symbols(lines))
-    result.references = _collect_references(blanked)
+    result.references = references_excluding_declarations(
+        _IDENTIFIER_RE.findall(blanked), result, _KEYWORDS
+    )
     result.dynamic_prefixes = _collect_dynamic_prefixes(text)
     return result
 
@@ -530,19 +533,6 @@ def _next_code_line(lines: list[str], after: int) -> str:
         if line.strip():
             return line.strip()
     return ""
-
-
-def _collect_references(blanked: str) -> set[str]:
-    """Every identifier the file mentions, minus the language's own words.
-
-    Coarser than the Python parser's version, which distinguishes a definition
-    from a use. Without a real parse that distinction is not available, and the
-    question this set answers - "does anything mention this name?" - tolerates
-    the extra names better than it tolerates missing one.
-    """
-    return {
-        word for word in _IDENTIFIER_RE.findall(blanked) if word not in _KEYWORDS
-    }
 
 
 def _collect_dynamic_prefixes(text: str) -> set[str]:
