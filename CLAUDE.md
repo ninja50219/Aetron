@@ -80,6 +80,13 @@ gets the lines `Symbol.line` through `Symbol.end_line` — one function, not the
 file it lives in. `end_line` is already recorded by the parser, so this is a
 slice, not a second parse.
 
+**Who enforces the rules.** `ask.py` checks them, rather than asking the model
+to follow them. A prompt is a request, and a model that ignored it would get
+source code it never justified asking for - the exact failure the levels exist
+to prevent. So `SOURCE` on a file whose structure was never read is refused,
+and the refusal says what to do instead, which makes it a step the model can
+recover from rather than a wasted turn.
+
 **Rules the protocol depends on:**
 
 - A level is never skipped. No L3 without an L2 that justified it.
@@ -111,8 +118,10 @@ aetron/
 ├── scanner/      walk the tree, decide what counts as source      DONE
 ├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#)
 ├── context/      the retrieval protocol, L1-L3, plus summary      DONE
-├── ai_providers/ local and API models                             EMPTY
-└── cli/          six subcommands, one per stage and level         DONE
+├── ai_providers/ local and API models, behind one method          DONE
+├── ask.py        the model drives L1-L3; the only module that
+│                 knows both halves of Aetron                      DONE
+└── cli/          seven subcommands, one per stage and level       DONE
 ```
 
 ## State
@@ -132,17 +141,14 @@ standard library, not by reading the README.
 
 **Not built — this is the work:**
 
-1. **`ai_providers/`.** Empty package, zero lines. Local models (Ollama, Llama,
-   Qwen, DeepSeek) and API models (Claude, GPT, Gemini). This is the only
-   remaining stage of the original pipeline.
-2. **The `ask` subcommand**, which drives L1 to L3 on a model's behalf. The
-   levels exist and compose; nothing yet decides between them automatically.
-3. **Parsers for the other thirteen languages** `EXTENSION_MAP` knows.
-   `PARSERS` in `analyzer/analyzer.py` has two entries. Adding one is still a
-   parser plus a line in that dict, and `csharp_parser.py` is the worked
-   example for a language with no parser in the standard library.
-4. **Documentation generation** and **potential bug detection**, from the
+1. **Parsers for the other thirteen languages** `EXTENSION_MAP` knows.
+   `PARSERS` in `analyzer/analyzer.py` has two entries. Adding one is a parser
+   plus a line in that dict; `csharp_parser.py` is the worked example for a
+   language with no parser in the standard library.
+2. **Documentation generation** and **potential bug detection**, from the
    README checklist.
+3. **More providers.** `ai_providers/` has Ollama and Anthropic. A provider is
+   one class with one method, so GPT and Gemini are small additions.
 
 **Known limits, worth knowing before trusting output:**
 
@@ -157,6 +163,11 @@ standard library, not by reading the README.
   correspondingly weak there.
 - Search reads names and docstrings. It has no idea that "sign in" and "login"
   are the same question; a synonym is a model's job, not an index's.
+- `ask` has never been run against a real local model in this repository -
+  there is no Ollama daemon in the environment it was written in. The loop,
+  the parsing and the enforcement are covered by a scripted provider; how well
+  a 7B model actually follows the protocol is unmeasured, and the first person
+  with Ollama installed should find out.
 
 ## Conventions
 

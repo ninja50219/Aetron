@@ -12,11 +12,10 @@ decision someone makes, and a command that quietly ran all three would hide the
 decision it exists to expose. Run by hand they are also the clearest statement
 of the contract an ai_provider will drive.
 
-TODO: once ai_providers lands, add an "ask" subcommand that takes a question
-and a model and drives search -> structure -> source on the model's behalf.
-Recommendation: keep it a separate command rather than a flag on analyze, so
-the expensive path is always explicit, and have it print the levels it used so
-the cost of an answer stays visible.
+"ask" drives the three levels on a model's behalf. It stayed a separate
+command rather than becoming a flag on analyze, so the path that costs money
+is always the one you typed, and it prints each request the model made so the
+cost of an answer is visible rather than implied.
 """
 
 import argparse
@@ -25,6 +24,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from aetron.ai_providers import DEFAULT_PROVIDER, PROVIDERS, ProviderError, get_provider
 from aetron.analyzer import analyze
 from aetron.analyzer.analyzer import AnalysisResult
 from aetron.analyzer.deadcode import Confidence
@@ -33,13 +33,14 @@ from aetron.context.search import DEFAULT_LIMIT, search
 from aetron.context.source import get_source
 from aetron.context.structure import build_structure, render
 from aetron.context.summary import build_summary
+from aetron.ask import MAX_STEPS, Step, ask
 from aetron.scanner import ScanResult, scan
 from aetron.scanner.gitignore import AVAILABLE as gitignore_available
 from aetron.scanner.paths import InvalidPathError, normalize_path
 
 PREVIEW_LIMIT = 5
 
-COMMANDS = ("scan", "analyze", "summary", "search", "structure", "source")
+COMMANDS = ("scan", "analyze", "summary", "search", "structure", "source", "ask")
 
 
 def prompt_for_path() -> Path:
@@ -247,6 +248,29 @@ def build_parser() -> argparse.ArgumentParser:
     source_command.add_argument("file", help="a path as search reports it")
     source_command.add_argument("symbol", help="a name as structure reports it")
 
+    ask_command = subcommands.add_parser(
+        "ask",
+        parents=[common],
+        help="ask a model a question, and let it drive the three levels",
+    )
+    ask_command.add_argument("question", help="e.g. 'where is login?'")
+    ask_command.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        default=DEFAULT_PROVIDER,
+        help=f"which model to ask (default: {DEFAULT_PROVIDER}, which runs locally)",
+    )
+    ask_command.add_argument("--model", help="model name, if not the provider's default")
+    ask_command.add_argument(
+        "--max-steps",
+        type=int,
+        default=MAX_STEPS,
+        help="how many requests the model may make before it has to answer",
+    )
+    ask_command.add_argument(
+        "--quiet", action="store_true", help="the answer only, without the working"
+    )
+
     return parser
 
 
@@ -421,6 +445,59 @@ def command_source(args, root: Path) -> None:
     print(result.numbered())
 
 
+def print_step(step: Step) -> None:
+    """One request the model made, as it happens."""
+    if not step.command:
+        print("  ...  the model did not issue a command")
+        return
+
+    if step.command == "ANSWER":
+        return
+
+    marker = "  x  " if step.refused else "  ->  "
+    print(f"{marker}{step.command} {step.argument}".rstrip())
+
+    if step.refused:
+        print(f"       {step.observation.splitlines()[0]}")
+
+
+def command_ask(args, root: Path) -> None:
+    """Levels 1 to 3, driven by a model rather than by hand."""
+    try:
+        provider = get_provider(args.provider, args.model)
+    except ProviderError as exc:
+        print(f"{exc}")
+        sys.exit(1)
+
+    scan_result = run_scan(args, root)
+    analysis = analyze(scan_result)
+
+    if not args.quiet:
+        print(f"Asking {provider.name} ({provider.model}): {args.question}\n")
+
+    answer = ask(
+        provider,
+        scan_result,
+        analysis,
+        args.question,
+        max_steps=args.max_steps,
+        on_step=None if args.quiet else print_step,
+    )
+
+    if answer.incomplete:
+        print(f"\n{answer.incomplete}")
+        sys.exit(1)
+
+    print(f"\n{answer.text}")
+
+    if not args.quiet:
+        # What the answer actually cost: the levels are only worth having if
+        # this stays short, so it is reported rather than left to be assumed.
+        requests = len([s for s in answer.steps if s.command and s.command != "ANSWER"])
+        read = ", ".join(answer.files_read) or "no source code"
+        print(f"\n({requests} requests; source read from: {read})")
+
+
 def main() -> None:
     parser = build_parser()
 
@@ -444,6 +521,7 @@ def main() -> None:
         "search": command_search,
         "structure": command_structure,
         "source": command_source,
+        "ask": command_ask,
     }
     handlers.get(args.command, command_scan)(args, root)
 

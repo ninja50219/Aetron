@@ -48,7 +48,7 @@ class TestParser:
         parser = build_parser()
         actions = [a for a in parser._actions if a.dest == "command"]
         assert set(actions[0].choices) == {
-            "scan", "analyze", "summary", "search", "structure", "source"
+            "scan", "analyze", "summary", "search", "structure", "source", "ask"
         }
 
 

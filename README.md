@@ -7,17 +7,19 @@ being handed every line of it.
 
 ## Project Status
 
-Early development. The scanning and analysis stages work and are tested; the
-context builder and AI providers are not written yet.
+Early development, but the whole pipeline now runs end to end: you can ask a
+question in English and get back a file and a line number. Python and C# are
+parsed; the other thirteen languages the scanner recognises are found by name
+but not yet read.
 
 | Stage | Module | Status |
 |---|---|---|
 | Scan the project | `aetron/scanner` | working |
 | Filter noise and generated code | `aetron/scanner` | working |
-| Parse structure into symbols | `aetron/analyzer` | working (Python) |
-| Link files, imports, inheritance | `aetron/analyzer` | working (Python) |
-| Build an optimised representation | `aetron/context` | not started |
-| Send only relevant context to a model | `aetron/ai_providers` | not started |
+| Parse structure into symbols | `aetron/analyzer` | working (Python, C#) |
+| Link files, imports, inheritance | `aetron/analyzer` | working |
+| Build an optimised representation | `aetron/context` | working |
+| Send only relevant context to a model | `aetron/ai_providers` | working (Ollama, Claude) |
 
 ## Problem
 
@@ -50,10 +52,14 @@ output and editor state.
 - [x] Symbol index: classes, methods, functions, module variables
 - [x] Import graph, entry points, most-depended-on files
 - [x] Dead code detection with confidence levels
-- [ ] Parsers for languages other than Python
-- [ ] Optimised context representation
-- [ ] Support for local models (Ollama, Llama, Qwen, DeepSeek)
-- [ ] Support for API models (Claude, GPT, Gemini)
+- [x] Ranked file search with a match percentage and the reason for it
+- [x] File skeletons: every definition and its line numbers, no code
+- [x] Source retrieval one definition at a time
+- [x] C# parser
+- [x] Support for local models (Ollama: Llama, Qwen, DeepSeek)
+- [x] Support for API models (Claude)
+- [ ] Parsers for the other thirteen languages
+- [ ] GPT and Gemini providers
 - [ ] Documentation generation
 - [ ] Potential bug detection
 
@@ -103,6 +109,68 @@ python -m aetron analyze /path/to/project --dead-code
 Results are graded `high`, `medium` or `low`; `--confidence low` shows
 everything. Nothing is presented as certain, because static analysis cannot see
 `getattr`, plugin registries or calls from another language.
+
+## Asking a question
+
+The point of the index is that a model can answer a question about the project
+without being given the project.
+
+```bash
+python -m aetron ask /path/to/project "where is login?"
+```
+
+```
+  ->  SEARCH login
+  ->  STRUCTURE Controllers/LoginController.cs
+  ->  SOURCE Controllers/LoginController.cs LoginHandler
+
+Login is handled in Controllers/LoginController.cs, LoginHandler at line 18.
+
+(3 requests; source read from: Controllers/LoginController.cs)
+```
+
+The model never receives the repository. It searches, reads one file's shape,
+then asks for one definition — and the line it prints is one you can open.
+
+By default this runs against a local model through
+[Ollama](https://ollama.com), so nothing leaves the machine:
+
+```bash
+ollama serve
+ollama pull qwen2.5-coder
+python -m aetron ask /path/to/project "where are passwords hashed?"
+```
+
+For Claude instead, `pip install anthropic`, set `ANTHROPIC_API_KEY`, and add
+`--provider anthropic`.
+
+### The three levels, by hand
+
+`ask` drives three commands you can also run yourself. Each is more expensive
+than the last, which is why each is a separate command.
+
+```bash
+python -m aetron search /path/to/project "login"        # ranked candidates
+python -m aetron structure /path/to/project auth/login.py   # definitions, no code
+python -m aetron source /path/to/project auth/login.py login_handler
+```
+
+`search` returns files with a match percentage and the reason for it. A file
+whose language has no parser yet is still found by name, and says so. Add
+`--json` to any of the three for a machine-readable form.
+
+Level 2 costs about an eighth of the file it describes, and a wrong guess at
+level 1 costs one skeleton rather than one file. That is the whole economy of
+the thing.
+
+## What a project contains
+
+```bash
+python -m aetron summary /path/to/project
+```
+
+Size, languages, the files most depended on, notable dependencies, and
+structural findings: circular imports, orphan modules, over-central files.
 
 ## Architecture
 
