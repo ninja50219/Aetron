@@ -7,8 +7,8 @@ being handed every line of it.
 
 ## Project Status
 
-Early development. The scanning and analysis stages work and are tested; the
-context builder and AI providers are not written yet.
+Early development. Scanning, Python analysis and an offline project summary
+are available. AI providers are not implemented yet.
 
 | Stage | Module | Status |
 |---|---|---|
@@ -16,7 +16,7 @@ context builder and AI providers are not written yet.
 | Filter noise and generated code | `aetron/scanner` | working |
 | Parse structure into symbols | `aetron/analyzer` | working (Python) |
 | Link files, imports, inheritance | `aetron/analyzer` | working (Python) |
-| Build an optimised representation | `aetron/context` | not started |
+| Build a structural summary | `aetron/context` | working (offline) |
 | Send only relevant context to a model | `aetron/ai_providers` | not started |
 
 ## Problem
@@ -50,6 +50,7 @@ output and editor state.
 - [x] Symbol index: classes, methods, functions, module variables
 - [x] Import graph, entry points, most-depended-on files
 - [x] Dead code detection with confidence levels
+- [x] Offline project summary with import groups and analysis limitations
 - [ ] Parsers for languages other than Python
 - [ ] Optimised context representation
 - [ ] Support for local models (Ollama, Llama, Qwen, DeepSeek)
@@ -87,6 +88,20 @@ Build the symbol index and import graph:
 ```bash
 python -m aetron analyze /path/to/project
 ```
+
+Explain the project's measured structure without sending code to an AI service:
+
+```bash
+python -m aetron explain /path/to/project
+```
+
+The report lists key files, the local import edge count, declared dependencies, documentation
+and structural findings. It also shows unsupported file types, parse errors
+and exclusion counts. Modules with no incoming imports are reading candidates,
+not confirmed runtime entry points. Mutually reachable import groups do not
+by themselves prove that a program fails at runtime. Lists selected by the
+summary (key files, reading candidates, dependencies and docs) retain up to ten
+items; the report is not a complete inventory.
 
 Find every definition of a name:
 
@@ -134,7 +149,7 @@ aetron/
 │   ├── resolver.py   imports -> edges between files
 │   ├── deadcode.py   unused definitions, with confidence levels
 │   └── analyzer.py   parse every file, then link them
-├── context/          not started
+├── context/          structural findings, summary and offline report
 ├── ai_providers/     not started
 └── cli/              argument parsing and reporting
 ```

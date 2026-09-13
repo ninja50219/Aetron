@@ -201,7 +201,7 @@ def scan(
 
             if doc:
                 result.docs.append(
-                    DocFile(rel_path=rel_path, size=size, lines=text.count("\n") + 1)
+                    DocFile(rel_path=rel_path, size=size, lines=_line_count(text))
                 )
                 continue
 
@@ -219,7 +219,7 @@ def scan(
                     rel_path=rel_path,
                     language=language,
                     size=size,
-                    lines=text.count("\n") + 1,
+                    lines=_line_count(text),
                 )
             )
 
@@ -229,3 +229,8 @@ def scan(
     result.skipped.sort(key=lambda f: f.rel_path)
     result.pruned_dirs.sort()
     return result
+
+
+def _line_count(text: str) -> int:
+    """Count physical lines; a trailing newline does not start an extra line."""
+    return text.count("\n") + int(bool(text) and not text.endswith("\n"))

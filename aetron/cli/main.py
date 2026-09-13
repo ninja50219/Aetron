@@ -18,13 +18,14 @@ from aetron.analyzer import analyze
 from aetron.analyzer.analyzer import AnalysisResult
 from aetron.analyzer.deadcode import Confidence
 from aetron.analyzer.symbols import SymbolKind
+from aetron.context.summary import build_summary
 from aetron.scanner import ScanResult, scan
 from aetron.scanner.gitignore import AVAILABLE as gitignore_available
 from aetron.scanner.paths import InvalidPathError, normalize_path
 
 PREVIEW_LIMIT = 5
 
-COMMANDS = ("scan", "analyze")
+COMMANDS = ("scan", "analyze", "explain")
 
 
 def prompt_for_path() -> Path:
@@ -196,6 +197,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--symbol", help="show every definition of a name and where it lives"
     )
 
+    subcommands.add_parser(
+        "explain", parents=[common], help="summarize project structure offline"
+    )
+
     return parser
 
 
@@ -254,6 +259,14 @@ def command_analyze(args, root: Path) -> None:
         print_dead_code(result, Confidence(args.confidence))
 
 
+def command_explain(args, root: Path) -> None:
+    from aetron.context.render import render_summary
+
+    scan_result = run_scan(args, root)
+    summary = build_summary(scan_result, analyze(scan_result))
+    print(render_summary(summary), end="")
+
+
 def main() -> None:
     parser = build_parser()
 
@@ -273,6 +286,8 @@ def main() -> None:
 
     if args.command == "analyze":
         command_analyze(args, root)
+    elif args.command == "explain":
+        command_explain(args, root)
     else:
         command_scan(args, root)
 

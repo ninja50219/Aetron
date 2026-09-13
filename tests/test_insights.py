@@ -51,6 +51,14 @@ class TestCycleDetection:
 
 
 class TestCircularImports:
+    def test_group_does_not_invent_an_alphabetical_cycle(self, make_project):
+        # There is no a -> b or c -> a edge in this group.
+        layout = {"a.py": "import c\n", "b.py": "import a\n", "c.py": "import b\n"}
+        finding = of_kind(insights_for(make_project, layout), "circular-import")[0]
+        assert finding.files == ["a.py", "b.py", "c.py"]
+        assert " -> " not in finding.detail
+        assert "does not by itself prove a runtime error" in finding.detail
+
     def test_reported_from_real_files(self, make_project):
         layout = {"a.py": "import b\n", "b.py": "import a\n"}
         found = of_kind(insights_for(make_project, layout), "circular-import")

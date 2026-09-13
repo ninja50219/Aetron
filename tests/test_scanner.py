@@ -20,7 +20,7 @@ class TestBasics:
         root = make_project({"app.py": "a = 1\nb = 2\nc = 3\n"})
         found = scan(root).files[0]
         assert found.language == "python"
-        assert found.lines == 4  # three lines plus the trailing newline
+        assert found.lines == 3
 
     def test_non_source_files_are_not_reported(self, make_project):
         root = make_project({"app.py": "x = 1\n", "logo.png": "binary-ish"})
