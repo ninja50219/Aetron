@@ -148,3 +148,18 @@ class TestCost:
         result = get_source(scan_result, analyze(scan_result), "big.py", "wanted")
         assert result.available
         assert len(result.text) < len(layout["big.py"]) / 100
+
+
+class TestSuggestingWhatWasMeant:
+    def test_a_mistyped_name_is_matched_on_its_plain_form(self, make_project):
+        """"dealDamge" is nowhere near "CombatService.dealDamage" by any string
+        measure, but the plain name is what the caller was reaching for."""
+        layout = {"a.py": "class CombatService:\n    def deal_damage(self):\n        pass\n"}
+        result = slice_of(make_project, layout, "a.py", "deal_damge")
+        assert "did you mean CombatService.deal_damage?" in result.problem
+
+    def test_a_name_nothing_resembles_gets_no_guess(self, make_project):
+        layout = {"a.py": "def login():\n    pass\n"}
+        assert "did you mean" not in slice_of(
+            make_project, layout, "a.py", "kubernetes"
+        ).problem

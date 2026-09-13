@@ -116,3 +116,28 @@ class TestOrdering:
         }
         found = insights_for(make_project, layout)
         assert found[0].severity == Severity.HIGH
+
+
+class TestNoImportGraphAtAll:
+    """An orphan is a file disconnected from the rest of the project, which
+    says as much about the other files as about this one. With no edges
+    anywhere there is nothing to be disconnected from."""
+
+    def test_a_project_with_no_edges_reports_no_orphans(self, make_project):
+        # Lua requires name instances in a game tree, not files, so a Roblox
+        # project resolves no edges at all. Measured on a real one, the finding
+        # named all 80 files and buried the report.
+        layout = {
+            f"src/Thing{n}.luau": f"local M = {{}}\nfunction M.go{n}()\nend\nreturn M\n"
+            for n in range(5)
+        }
+        assert of_kind(insights_for(make_project, layout), "orphan-module") == []
+
+    def test_a_project_with_edges_still_reports_its_orphans(self, make_project):
+        layout = {
+            "a.py": "import b\n",
+            "b.py": "x = 1\n",
+            "lonely.py": "def unused():\n    pass\n",
+        }
+        found = of_kind(insights_for(make_project, layout), "orphan-module")
+        assert found and found[0].files == ["lonely.py"]

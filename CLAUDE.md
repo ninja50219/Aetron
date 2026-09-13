@@ -170,7 +170,10 @@ standard library, not by reading the README.
   symbol index but almost no import graph. Entry points and hub files are
   correspondingly weak there.
 - A Roblox `require` names an instance in a game tree, not a path on disk, so
-  Lua requires are recorded as written and resolve to nothing. Turning one into
+  Lua requires are recorded as written and resolve to nothing. A Lua-only
+  project therefore has no import graph at all, and `explain` says so under
+  Limitations rather than letting the graph-shaped sections imply that nothing
+  in the project uses anything else in it. Turning one into
   a file means reading the Rojo project file and reproducing its mapping; an
   invented edge would be worse than no edge.
 - Search reads names and docstrings. It has no idea that "sign in" and "login"

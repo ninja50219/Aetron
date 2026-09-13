@@ -24,8 +24,11 @@ def render_summary(summary: ProjectSummary) -> str:
     lines += _section("Imports", [f"Import edges: {summary.import_edges}"])
     lines += _section(
         "Modules with no incoming local imports (not confirmed runtime entrypoints)",
-        summary.entry_points,
+        summary.entry_points if summary.import_edges else [],
     )
+    # The heading stays the same whatever the data, so two reports can be read
+    # against each other. When there is no graph to rank by, Limitations says
+    # so rather than the heading changing under the reader.
     lines += _section(
         "Key files (ranked by dependents, then symbols)",
         [
@@ -69,6 +72,20 @@ def _limitations(summary: ProjectSummary) -> list[str]:
         f"Unsupported file types (not parsed): {unsupported}",
         f"Parse errors: {len(summary.parse_errors)}",
     ]
+
+    if summary.file_count and not summary.import_edges:
+        # Saying the graph is empty is the honest version of what the sections
+        # above would otherwise imply: that nothing in the project uses
+        # anything else in it.
+        lines += [
+            "No import edges were resolved, so nothing here describes how these "
+            "files relate to each other.",
+            "  Key files are ranked by symbol count alone, and findings that "
+            "need a graph - cycles, hub files, disconnected modules - are "
+            "unavailable rather than empty.",
+            "  In Lua this is expected: a Roblox require names an instance in a "
+            "game tree, not a path on disk.",
+        ]
     lines += [f"  {path}: {message}" for path, message in summary.parse_errors]
     if summary.parse_errors:
         lines.append(

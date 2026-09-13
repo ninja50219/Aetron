@@ -164,6 +164,16 @@ def _orphan_modules(analysis: AnalysisResult) -> list[Insight]:
     if not orphans:
         return []
 
+    # An orphan is a file disconnected from the rest of the project, which is
+    # a statement about the other files as much as about this one. With no
+    # edges anywhere there is nothing to be disconnected from, and the finding
+    # describes the graph's own absence rather than anything about the code.
+    # Reported anyway it names the whole project - measured on a real Roblox
+    # project, all 80 files - and buries the report under a list of every file
+    # in it. The renderer says why the graph is empty instead.
+    if not any(analysis.imports.values()):
+        return []
+
     return [
         Insight(
             kind="orphan-module",

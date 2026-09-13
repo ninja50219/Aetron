@@ -134,3 +134,23 @@ class TestRobustness:
     def test_manifest_path_is_recorded(self):
         deps = parse_manifest("package.json", '{"dependencies":{"a":"1"}}', "web/package.json")
         assert deps[0].manifest == "web/package.json"
+
+
+class TestRoblox:
+    def test_wally_dependencies(self):
+        text = (
+            '[package]\nname = "denis/game"\n\n'
+            '[dependencies]\nSignal = "sleitnick/signal@1.5.0"\n'
+            'Promise = "evaera/promise@4.0.0"\n'
+        )
+        deps = parse_manifest("wally.toml", text, "wally.toml")
+        assert {d.name: d.version for d in deps} == {
+            "Signal": "1.5.0",
+            "Promise": "4.0.0",
+        }
+        assert {d.ecosystem for d in deps} == {"roblox"}
+
+    def test_aftman_tools(self):
+        text = '[tools]\nrojo = "rojo-rbx/rojo@7.4.1"\n'
+        deps = parse_manifest("aftman.toml", text, "aftman.toml")
+        assert {d.name: d.version for d in deps} == {"rojo": "7.4.1"}
