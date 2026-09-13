@@ -179,6 +179,11 @@ standard library, not by reading the README.
 
 ## Conventions
 
+**Working alongside another agent:** read [CONTRIBUTING.md](CONTRIBUTING.md)
+first. Branch from current `main` before you start rather than before you push
+- two agents worked this repository in parallel on 2026-09-13 and the one that
+did not pull first spent an hour on a merge it could have avoided.
+
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest

@@ -259,7 +259,9 @@ Nothing else changes.
 
 ## Contributing
 
-<!-- CONTRIBUTING.md will be added later -->
+See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: branch from current
+`main` before you start, one branch per task, and run the suite both with and
+without `pathspec` before you push.
 
 ## License
 

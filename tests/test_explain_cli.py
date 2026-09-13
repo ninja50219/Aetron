@@ -4,6 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from aetron.scanner.gitignore import AVAILABLE as gitignore_available
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,6 +76,11 @@ def test_scan_shorthand_still_works(make_project):
     assert "Scanned 1 files" in result.stdout
 
 
+# What this asserts is what pathspec adds. pathspec is an optional runtime
+# dependency and the scanner falls back to its own rules without it, so
+# without it there is nothing here to assert - and a missing optional
+# dependency would be reported as a broken explain command.
+@pytest.mark.skipif(not gitignore_available, reason="pathspec is not installed")
 def test_explain_honors_gitignore_override(make_project):
     root = make_project({".gitignore": "hidden.py\n", "hidden.py": "x = 1\n"})
     hidden = run_cli("explain", root)
