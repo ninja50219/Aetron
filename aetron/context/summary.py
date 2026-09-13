@@ -59,6 +59,9 @@ class ProjectSummary:
     # Findings
     insights: list[Insight] = field(default_factory=list)
     unparsed_languages: dict[str, int] = field(default_factory=dict)
+    parse_errors: list[tuple[str, str]] = field(default_factory=list)
+    skipped_file_count: int = 0
+    pruned_directory_count: int = 0
 
     @property
     def primary_language(self) -> str | None:
@@ -72,6 +75,9 @@ def build_summary(scan_result: ScanResult, analysis: AnalysisResult) -> ProjectS
         name=scan_result.root.name,
         file_count=len(scan_result.files),
         line_count=scan_result.total_lines,
+        parse_errors=list(analysis.parse_errors),
+        skipped_file_count=len(scan_result.skipped),
+        pruned_directory_count=len(scan_result.pruned_dirs),
     )
 
     for file_info in scan_result.files:
@@ -83,7 +89,10 @@ def build_summary(scan_result: ScanResult, analysis: AnalysisResult) -> ProjectS
             summary.symbol_counts[kind.value] = count
 
     summary.import_edges = sum(len(targets) for targets in analysis.imports.values())
-    summary.entry_points = analysis.entry_points()[:TOP_N]
+    failed_paths = {path for path, _ in summary.parse_errors}
+    summary.entry_points = [
+        path for path in analysis.entry_points() if path not in failed_paths
+    ][:TOP_N]
     summary.key_files = _rank_files(scan_result, analysis)
 
     for dependency in scan_result.dependencies:
@@ -114,6 +123,8 @@ def _rank_files(scan_result: ScanResult, analysis: AnalysisResult) -> list[FileS
 
     ranked = []
     for file_symbols in analysis.files:
+        if file_symbols.parse_error:
+            continue
         rel_path = file_symbols.rel_path
         ranked.append(
             FileSummary(

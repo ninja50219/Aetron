@@ -128,9 +128,13 @@ def _circular_imports(analysis: AnalysisResult) -> list[Insight]:
                 # make a codebase impossible to read in any order, so this is
                 # a design problem rather than a bug.
                 severity=Severity.MEDIUM if len(cycle) == 2 else Severity.HIGH,
-                summary=f"{len(cycle)} files import each other in a cycle",
+                summary=f"{len(cycle)} files form a mutually reachable import group",
                 files=cycle,
-                detail=" -> ".join(cycle) + f" -> {cycle[0]}",
+                detail=(
+                    "Group members: " + ", ".join(cycle)
+                    + ". Imports connect these files directly or indirectly; "
+                    "this does not by itself prove a runtime error."
+                ),
             )
         )
 

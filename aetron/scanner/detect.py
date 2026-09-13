@@ -60,8 +60,14 @@ def count_lines(text: str) -> int:
     the project one line longer than it is, which inflated every reported total
     and - worse - halved the average line length of a single-line file, letting
     minified files through the check below.
+
+    Only "\n" separates lines here. str.splitlines is the obvious spelling and
+    is wrong for this: it also breaks on form feed, vertical tab and U+2028,
+    so a file using form feeds as page separators - ordinary in older C and
+    Python - counted more lines than its parser sees, and every line number
+    Aetron reports is only useful if it agrees with the parser.
     """
-    return len(text.splitlines())
+    return text.count("\n") + int(bool(text) and not text.endswith("\n"))
 
 
 def generated_reason(name: str, text: str) -> str | None:

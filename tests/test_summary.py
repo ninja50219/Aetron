@@ -109,6 +109,23 @@ class TestContext:
 
 
 class TestFindings:
+    def test_parse_errors_are_visible_and_not_ranked(self, make_project):
+        summary = summarise(make_project, {"pkg/broken.py": "def broken(\n"})
+        assert len(summary.parse_errors) == 1
+        assert summary.parse_errors[0][0] == "pkg/broken.py"
+        assert summary.parse_errors[0][1]
+        assert summary.key_files == []
+        assert summary.entry_points == []
+
+    def test_scan_exclusions_are_counted(self, make_project):
+        summary = summarise(make_project, {
+            "app.py": "x = 1\n",
+            "app.min.js": "let x=1;",
+            "node_modules/dep.js": "let x=1;",
+        })
+        assert summary.skipped_file_count == 1
+        assert summary.pruned_directory_count == 1
+
     def test_insights_are_included(self, make_project):
         layout = {"a.py": "import b\n", "b.py": "import a\n"}
         assert [i.kind for i in summarise(make_project, layout).insights] == ["circular-import"]

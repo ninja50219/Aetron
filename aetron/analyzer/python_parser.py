@@ -8,6 +8,8 @@ FileSymbols, never raise.
 import ast
 import re
 
+from aetron.scanner.detect import count_lines
+
 from .symbols import FileSymbols, ImportRef, Symbol, SymbolKind
 
 LANGUAGE = "python"
@@ -48,7 +50,7 @@ def _build_module(tree: ast.Module, text: str, rel_path: str) -> Symbol:
         name=name,
         kind=SymbolKind.MODULE,
         line=1,
-        end_line=len(text.splitlines()) or 1,
+        end_line=count_lines(text) or 1,
         qualified_name=name,
         docstring=ast.get_docstring(tree),
     )

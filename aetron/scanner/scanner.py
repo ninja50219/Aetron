@@ -229,3 +229,4 @@ def scan(
     result.skipped.sort(key=lambda f: f.rel_path)
     result.pruned_dirs.sort()
     return result
+

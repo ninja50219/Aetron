@@ -8,9 +8,10 @@ being handed every line of it.
 ## Project Status
 
 Early development, but the whole pipeline now runs end to end: you can ask a
-question in English and get back a file and a line number. Python, C#, JavaScript and
-TypeScript are parsed; the other ten languages the scanner recognises are found
-by name but not yet read.
+question in English and get back a file and a line number, or read the whole
+project as one offline report. Python, C#, JavaScript and TypeScript are
+parsed; the other ten languages the scanner recognises are found by name but
+not yet read.
 
 | Stage | Module | Status |
 |---|---|---|
@@ -19,6 +20,7 @@ by name but not yet read.
 | Parse structure into symbols | `aetron/analyzer` | working (Python, C#, JS/TS) |
 | Link files, imports, inheritance | `aetron/analyzer` | working |
 | Build an optimised representation | `aetron/context` | working |
+| Report a whole project offline | `aetron/context` | working |
 | Send only relevant context to a model | `aetron/ai_providers` | working (Ollama, Claude) |
 
 ## Problem
@@ -55,6 +57,7 @@ output and editor state.
 - [x] Ranked file search with a match percentage and the reason for it
 - [x] File skeletons: every definition and its line numbers, no code
 - [x] Source retrieval one definition at a time
+- [x] Offline project report, stating what the analysis could not cover
 - [x] C#, JavaScript and TypeScript parsers
 - [x] Support for local models (Ollama: Llama, Qwen, DeepSeek)
 - [x] Support for API models (Claude)
@@ -93,6 +96,20 @@ Build the symbol index and import graph:
 ```bash
 python -m aetron analyze /path/to/project
 ```
+
+Explain the project's measured structure without sending code to an AI service:
+
+```bash
+python -m aetron explain /path/to/project
+```
+
+The report lists key files, the local import edge count, declared dependencies, documentation
+and structural findings. It also shows unsupported file types, parse errors
+and exclusion counts. Modules with no incoming imports are reading candidates,
+not confirmed runtime entry points. Mutually reachable import groups do not
+by themselves prove that a program fails at runtime. Lists selected by the
+summary (key files, reading candidates, dependencies and docs) retain up to ten
+items; the report is not a complete inventory.
 
 Find every definition of a name:
 
@@ -205,12 +222,13 @@ aetron/
 │   ├── resolver.py   imports -> edges, dotted modules and paths alike
 │   ├── deadcode.py   unused definitions, with confidence levels
 │   └── analyzer.py   parse every file, then link them
-├── context/          the retrieval protocol
+├── context/          the retrieval protocol, and the offline report
 │   ├── search.py     level 1: rank files, with the reason for each
 │   ├── structure.py  level 2: one file's shape, no code
 │   ├── source.py     level 3: one definition's code
 │   ├── insights.py   cycles, orphans, hubs
-│   └── summary.py    what a newcomer reads first
+│   ├── summary.py    what a newcomer reads first
+│   └── render.py     the summary as an English report, claims nothing extra
 ├── ai_providers/     local models and API models, behind one method
 ├── ask.py            the model drives the levels; the rules are enforced here
 └── cli/              argument parsing and reporting
