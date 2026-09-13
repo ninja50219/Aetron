@@ -116,7 +116,7 @@ changing anything below.
 ```
 aetron/
 ├── scanner/      walk the tree, decide what counts as source      DONE
-├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#, JS/TS)
+├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#, JS/TS, Lua)
 ├── context/      the retrieval protocol, L1-L3, plus summary      DONE
 ├── ai_providers/ local and API models, behind one method          DONE
 ├── ask.py        the model drives L1-L3; the only module that
@@ -134,15 +134,15 @@ standard library, not by reading the README.
 - `scanner/` — tree walk, four kinds of ignore rule anchored to detected
   project roots, `.gitignore` via `pathspec`, generated and minified detection,
   dependency manifests for eight ecosystems, docs collected separately.
-- `analyzer/` — Python via `ast`; C#, JavaScript and TypeScript by pattern
-  and brace counting. Import resolution for both dotted modules and path-style
+- `analyzer/` — Python via `ast`; C#, JavaScript, TypeScript and Lua/Luau by
+  pattern, the first three by counting braces and Lua by counting `end`. Import resolution for both dotted modules and path-style
   specifiers, entry points, dead code graded high/medium/low.
 - `context/` — all three retrieval levels, plus `insights` and `summary`.
 - `cli/` — `scan`, `analyze`, `summary`, `search`, `structure`, `source`.
 
 **Not built — this is the work:**
 
-1. **Parsers for the remaining ten languages** `EXTENSION_MAP` knows — Java,
+1. **Parsers for the remaining nine languages** `EXTENSION_MAP` knows — Java,
    Go, Rust, Ruby, PHP, C, C++, Kotlin, Swift, Lua, Scala, Dart. `PARSERS` in
    `analyzer/analyzer.py` has four entries. Adding one is a parser plus a line
    in that dict; `csharp_parser.py` is the worked example for a curly-brace
@@ -169,6 +169,10 @@ standard library, not by reading the README.
 - C# `using` directives name namespaces, not files, so a C#-only project has a
   symbol index but almost no import graph. Entry points and hub files are
   correspondingly weak there.
+- A Roblox `require` names an instance in a game tree, not a path on disk, so
+  Lua requires are recorded as written and resolve to nothing. Turning one into
+  a file means reading the Rojo project file and reproducing its mapping; an
+  invented edge would be worse than no edge.
 - Search reads names and docstrings. It has no idea that "sign in" and "login"
   are the same question; a synonym is a model's job, not an index's.
 - `ask` has never been run against a real local model in this repository -

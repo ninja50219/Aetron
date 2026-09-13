@@ -23,6 +23,7 @@ EXTENSION_MAP = {
     ".kt": "kotlin",
     ".swift": "swift",
     ".lua": "lua",
+    ".luau": "lua",
     ".scala": "scala",
     ".dart": "dart",
 }

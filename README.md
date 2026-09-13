@@ -9,15 +9,15 @@ being handed every line of it.
 
 Early development, but the whole pipeline now runs end to end: you can ask a
 question in English and get back a file and a line number, or read the whole
-project as one offline report. Python, C#, JavaScript and TypeScript are
-parsed; the other ten languages the scanner recognises are found by name but
-not yet read.
+project as one offline report. Python, C#, JavaScript, TypeScript and
+Lua/Luau are parsed; the other nine languages the scanner recognises are found
+by name but not yet read.
 
 | Stage | Module | Status |
 |---|---|---|
 | Scan the project | `aetron/scanner` | working |
 | Filter noise and generated code | `aetron/scanner` | working |
-| Parse structure into symbols | `aetron/analyzer` | working (Python, C#, JS/TS) |
+| Parse structure into symbols | `aetron/analyzer` | working (Python, C#, JS/TS, Lua) |
 | Link files, imports, inheritance | `aetron/analyzer` | working |
 | Build an optimised representation | `aetron/context` | working |
 | Report a whole project offline | `aetron/context` | working |
@@ -58,10 +58,11 @@ output and editor state.
 - [x] File skeletons: every definition and its line numbers, no code
 - [x] Source retrieval one definition at a time
 - [x] Offline project report, stating what the analysis could not cover
-- [x] C#, JavaScript and TypeScript parsers
+- [x] C#, JavaScript, TypeScript and Lua/Luau parsers
+- [x] Roblox projects: `.luau`, and Wally's vendored `Packages` left out
 - [x] Support for local models (Ollama: Llama, Qwen, DeepSeek)
 - [x] Support for API models (Claude)
-- [ ] Parsers for the remaining ten languages
+- [ ] Parsers for the remaining nine languages
 - [ ] GPT and Gemini providers
 - [ ] Documentation generation
 - [ ] Potential bug detection
@@ -218,6 +219,7 @@ aetron/
 │   ├── python_parser.py      Python, via the standard ast module
 │   ├── csharp_parser.py      C#, by pattern and brace counting
 │   ├── javascript_parser.py  JavaScript and TypeScript, the same way
+│   ├── lua_parser.py         Lua and Luau, counting "end" not braces
 │   ├── references.py  a declaration is not a use of itself
 │   ├── resolver.py   imports -> edges, dotted modules and paths alike
 │   ├── deadcode.py   unused definitions, with confidence levels

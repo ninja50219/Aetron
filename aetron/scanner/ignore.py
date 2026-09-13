@@ -38,6 +38,8 @@ PROJECT_MARKERS = frozenset(
         "pom.xml",
         "build.gradle",
         "composer.json",
+        "wally.toml",  # roblox
+        "default.project.json",  # rojo
         "gemfile",
     }
 )
