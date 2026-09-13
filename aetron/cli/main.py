@@ -66,11 +66,13 @@ def prompt_for_path() -> Path:
 
 def print_progress(count: int, rel_path: str) -> None:
     # \r keeps the counter on one line, which only makes sense on a terminal.
-    print(f"\rScanning... {count} files", end="", flush=True)
+    # On stderr for the same reason the pathspec note is: progress is about
+    # the run, not part of the result, and the result may be piped.
+    print(f"\rScanning... {count} files", end="", flush=True, file=sys.stderr)
 
 
 def clear_progress() -> None:
-    print("\r" + " " * 40 + "\r", end="", flush=True)
+    print("\r" + " " * 40 + "\r", end="", flush=True, file=sys.stderr)
 
 
 def print_scan_report(result: ScanResult, show_files: bool, listing_pruned: bool) -> None:
@@ -275,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_scan(args, root: Path) -> ScanResult:
-    interactive = sys.stdout.isatty()
+    interactive = sys.stderr.isatty()
     result = scan(
         root,
         on_progress=print_progress if interactive else None,
@@ -511,7 +513,14 @@ def main() -> None:
     args = parser.parse_args(argv)
 
     if not args.no_gitignore and not gitignore_available:
-        print("Note: pathspec is not installed, .gitignore files are not applied.\n")
+        # stderr, not stdout: this is a note about the tool, not part of the
+        # answer. On stdout it was concatenated with --json output, so a
+        # machine consumer got invalid JSON purely because an optional
+        # dependency was absent.
+        print(
+            "Note: pathspec is not installed, .gitignore files are not applied.\n",
+            file=sys.stderr,
+        )
 
     root = resolve_root(parser, args.path)
 

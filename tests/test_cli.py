@@ -10,7 +10,15 @@ import json
 
 import pytest
 
+import sys
+
 from aetron.cli.main import build_parser, main
+
+# aetron/cli/__init__.py does "from .main import main", so the package carries
+# an attribute named main that shadows the submodule of the same name and
+# "import aetron.cli.main as cli" hands back the function. sys.modules is not
+# confused by that.
+cli = sys.modules["aetron.cli.main"]
 
 
 @pytest.fixture
@@ -41,6 +49,29 @@ PROJECT = {
     "ui/view.py": "def render():\n    return 'page'\n",
     "README.md": "# Demo\n",
 }
+
+
+class TestStdoutIsOnlyTheAnswer:
+    """Anything printed about the run belongs on stderr. On stdout it is
+    concatenated with the result, and --json stops being JSON."""
+
+    def test_json_is_parsable_without_the_optional_dependency(
+        self, run, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(cli, "gitignore_available", False)
+        found = json.loads(run(PROJECT, "search", "login", "--json"))
+        assert found[0]["rel_path"] == "auth/login.py"
+
+    def test_the_note_is_still_shown(self, make_project, monkeypatch, capsys):
+        # Not via the run fixture: reading stdout drains stderr with it.
+        monkeypatch.setattr(cli, "gitignore_available", False)
+        root = make_project(PROJECT)
+        monkeypatch.setattr("sys.argv", ["aetron", "search", str(root), "login"])
+        main()
+
+        captured = capsys.readouterr()
+        assert "pathspec is not installed" in captured.err
+        assert "pathspec" not in captured.out
 
 
 class TestParser:

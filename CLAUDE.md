@@ -213,12 +213,59 @@ cut high-confidence findings from 225 to 147.
 
 ### 2026-09-13 — retrieval protocol recorded
 
-No code changed. Audited the tree against the README and found `context/` half
-built rather than absent, `filters/` dead, and the pathspec tests hard-failing
-without an optional dependency. Wrote down the four-level retrieval protocol
-above, which had lived only in conversation.
+Audited the tree against the README and found `context/` half built rather than
+absent, `filters/` dead, and the pathspec tests hard-failing without an
+optional dependency. Wrote down the four-level retrieval protocol, which had
+lived only in conversation.
 
-**Next:** build L1 search — match a term against the existing symbol index and
-return ranked candidates with a percentage and a reason. It is the first level
-the model actually talks to, it needs no parser work and no provider, and every
-level above it is easier to design once its output shape is fixed.
+### 2026-09-13 — the protocol, built
+
+The pipeline runs end to end. `aetron ask <project> "where is login?"` returns
+`Controllers/LoginController.cs, LoginHandler at line 18`, and the model never
+receives the repository.
+
+Landed: all three retrieval levels (`context/search.py`, `structure.py`,
+`source.py`); a C# parser and a JavaScript/TypeScript parser; `ai_providers/`
+with Ollama and Claude behind one method; `ask.py`, which enforces the
+protocol rather than asking the model to follow it; and seven CLI commands.
+`filters/` is gone, `context/` is reachable, and the README no longer
+describes a different program. 180 tests became 410.
+
+Twelve bugs, most of them in code that was already merged and tested. The ones
+worth remembering, because each came from running the thing rather than
+reading it:
+
+- Every string literal counted as a reference, docstrings included, so any
+  definition whose name appeared in a sentence was silently marked used.
+- Line counts were one too high everywhere, and the same expression set the
+  divisor for the minified check, so a single-line minified file could pass as
+  hand-written source.
+- A UTF-8 byte order mark made a file unparseable. Visual Studio writes one by
+  default, and C# is the language the worked example is written in.
+- Pattern-based parsers counted a declaration as a use of itself, which turned
+  dead code detection into a no-op for C# from the day it was added. The fix
+  lives in `analyzer/references.py` so the next such parser inherits it.
+- A type whose braces open and close on one line pushed a scope that could
+  never be popped, so everything after it in the file was nested inside it.
+  Found in JavaScript, then found again in C# by going to look.
+- Search combined correlated evidence as though it were independent, which
+  walked every plausible file to 99% and flattened the top of the ranking.
+- The "pathspec is not installed" note went to stdout, so `--json` output was
+  not JSON whenever an optional dependency was absent.
+
+Aetron found one of these itself: `--dead-code` reported an unused property on
+`SymbolOutline`, written earlier the same session.
+
+**Next**, in the order I would take them:
+
+1. **Run `ask` against a real local model.** Everything about the loop is
+   covered by a scripted provider, and none of it has met a 7B model. Whether
+   the command language survives contact is the biggest open question in the
+   project, and the first person with Ollama installed can answer it in ten
+   minutes. Expect the prompt to need work before the code does.
+2. **A Java or Go parser**, whichever the projects you care about are written
+   in. `csharp_parser.py` is the worked example; budget a day and write the
+   tests first, because both parsers grew their bugs in the same places.
+3. **A GPT or Gemini provider**, if wanted — one class, one method.
+4. Nothing in `context/` needs revisiting. It is the part that has been run
+   hardest and is now the most tested.
