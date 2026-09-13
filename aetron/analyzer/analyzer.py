@@ -12,7 +12,7 @@ from pathlib import Path
 
 from aetron.scanner.scanner import ScanResult
 
-from . import python_parser
+from . import csharp_parser, python_parser
 from .deadcode import DeadCodeCandidate, find_dead_code
 from .resolver import build_module_map, resolve
 from .symbols import FileSymbols, Symbol, SymbolKind
@@ -21,6 +21,7 @@ from .symbols import FileSymbols, Symbol, SymbolKind
 # rest of this module does not change.
 PARSERS: dict[str, Callable[[str, str], FileSymbols]] = {
     python_parser.LANGUAGE: python_parser.parse,
+    csharp_parser.LANGUAGE: csharp_parser.parse,
 }
 
 ProgressCallback = Callable[[int, str], None]

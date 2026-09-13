@@ -101,8 +101,8 @@ class TestSayingWhenThereIsNothingToSay:
     """An empty skeleton and an unreadable file are opposite findings."""
 
     def test_a_file_with_no_parser_explains_itself(self, make_project):
-        layout = {"LoginController.cs": "public class LoginController {}\n"}
-        structure = structure_of(make_project, layout, "LoginController.cs")
+        layout = {"login.go": "package main\n\nfunc Login() {}\n"}
+        structure = structure_of(make_project, layout, "login.go")
         assert structure.available is False
         assert "no parser" in structure.unavailable
 
@@ -155,8 +155,8 @@ class TestRendering:
         assert "class Login(Controller)" in render(structure_of(make_project, layout, "a.py"))
 
     def test_an_unavailable_file_says_why(self, make_project):
-        layout = {"LoginController.cs": "public class LoginController {}\n"}
-        rendered = render(structure_of(make_project, layout, "LoginController.cs"))
+        layout = {"login.go": "package main\n\nfunc Login() {}\n"}
+        rendered = render(structure_of(make_project, layout, "login.go"))
         assert "unavailable" in rendered and "no parser" in rendered
 
     def test_an_empty_file_says_it_is_empty(self, make_project):

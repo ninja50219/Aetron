@@ -87,11 +87,11 @@ class TestUnparsedLanguages:
     """
 
     def test_a_file_with_no_parser_is_still_found(self, make_project):
-        layout = {"LoginController.cs": "public class LoginController {}\n"}
-        assert paths(find(make_project, layout, "login")) == ["LoginController.cs"]
+        layout = {"logincontroller.go": "package main\n"}
+        assert paths(find(make_project, layout, "login")) == ["logincontroller.go"]
 
     def test_the_candidate_says_it_could_not_be_parsed(self, make_project):
-        layout = {"LoginController.cs": "public class LoginController {}\n"}
+        layout = {"logincontroller.go": "package main\n"}
         assert find(make_project, layout, "login")[0].parsed is False
 
     def test_a_parsed_candidate_says_so(self, make_project):

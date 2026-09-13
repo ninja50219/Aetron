@@ -97,8 +97,8 @@ class TestLevelTwo:
         assert "sha256" not in output
 
     def test_structure_reports_a_file_it_cannot_read(self, run):
-        layout = {"Login.cs": "public class Login {}\n"}
-        assert "no parser" in run(layout, "structure", "Login.cs")
+        layout = {"login.go": "package main\n\nfunc Login() {}\n"}
+        assert "no parser" in run(layout, "structure", "login.go")
 
     def test_json_output_is_parsable(self, run):
         data = json.loads(run(PROJECT, "structure", "auth/login.py", "--json"))

@@ -109,62 +109,54 @@ changing anything below.
 ```
 aetron/
 ├── scanner/      walk the tree, decide what counts as source      DONE
-├── analyzer/     source -> symbols, imports, dead code            DONE (Python only)
-├── context/      structural findings and the project summary      PARTIAL
+├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#)
+├── context/      the retrieval protocol, L1-L3, plus summary      DONE
 ├── ai_providers/ local and API models                             EMPTY
-├── filters/      empty package, nothing references it             DEAD
-└── cli/          scan and analyze subcommands                     PARTIAL
+└── cli/          six subcommands, one per stage and level         DONE
 ```
 
 ## State
 
-Verified by running the suite and the tool against itself, not by reading the
-README — the README's status table is stale and says `context` is not started
-when half of it exists.
+Verified by running the suite and the tool against itself and against the
+standard library, not by reading the README.
 
-**Working and tested:**
+**Working and tested** (321 tests, ~0.6s):
 
 - `scanner/` — tree walk, four kinds of ignore rule anchored to detected
   project roots, `.gitignore` via `pathspec`, generated and minified detection,
   dependency manifests for eight ecosystems, docs collected separately.
-- `analyzer/` — Python symbol extraction via `ast`, import resolution to files,
-  entry points, most-depended-on files, dead code graded high/medium/low.
-- `context/insights.py` — circular imports (iterative Tarjan), orphan modules,
-  hub files. Deterministic; no model involved.
-- `context/summary.py` — `build_summary` reduces a scan plus an analysis to a
-  `ProjectSummary`.
-- `cli/` — `scan` and `analyze`.
-- 180 tests, ~0.3s.
+- `analyzer/` — Python via `ast`, C# by pattern and brace counting; import
+  resolution, entry points, dead code graded high/medium/low.
+- `context/` — all three retrieval levels, plus `insights` and `summary`.
+- `cli/` — `scan`, `analyze`, `summary`, `search`, `structure`, `source`.
 
 **Not built — this is the work:**
 
-1. **L1 search.** Does not exist in any form. The index it needs is already
-   there; what is missing is matching and ranking over it.
-2. **L2 structure serialiser.** `FileSymbols` holds the data; nothing turns it
-   into JSON for a model.
-3. **L3 source extraction.** Nothing slices a file by `Symbol.line` and
-   `Symbol.end_line`.
-4. **`ai_providers/`.** Empty package, zero lines. Local models (Ollama, Llama,
-   Qwen, DeepSeek) and API models (Claude, GPT, Gemini).
-5. **The `ask` subcommand**, which drives L1→L3 on the model's behalf.
-6. **Parsers for languages other than Python.** `PARSERS` in
-   `analyzer/analyzer.py` has exactly one entry, while `EXTENSION_MAP` knows 15
-   languages — so 14 are scanned and then honestly reported as unparsed.
-   `LoginController.cs` is the protocol's own example and C# cannot be parsed
-   yet; search over file and symbol names can be built before the parsers land,
-   but L2 for a `.cs` file cannot.
+1. **`ai_providers/`.** Empty package, zero lines. Local models (Ollama, Llama,
+   Qwen, DeepSeek) and API models (Claude, GPT, Gemini). This is the only
+   remaining stage of the original pipeline.
+2. **The `ask` subcommand**, which drives L1 to L3 on a model's behalf. The
+   levels exist and compose; nothing yet decides between them automatically.
+3. **Parsers for the other thirteen languages** `EXTENSION_MAP` knows.
+   `PARSERS` in `analyzer/analyzer.py` has two entries. Adding one is still a
+   parser plus a line in that dict, and `csharp_parser.py` is the worked
+   example for a language with no parser in the standard library.
+4. **Documentation generation** and **potential bug detection**, from the
+   README checklist.
 
-**Known defects, small and worth fixing when nearby:**
+**Known limits, worth knowing before trusting output:**
 
-- `aetron/filters/` is an empty package that nothing imports. Filtering lives in
-  `scanner/ignore.py`, `gitignore.py` and `detect.py`. The directory only
-  misleads.
-- `context/` is built but unreachable: `context/__init__.py` is empty and no CLI
-  command surfaces a summary, so nothing outside `tests/` imports it.
-- `pathspec` is documented as optional, but without it four tests in
-  `tests/test_scanner.py` fail rather than skip. The scanner's fallback works;
-  the tests just do not know about it.
-- README status table is wrong on the `context` row.
+- The C# parser is not a compiler and cannot be. It does not resolve types or
+  expand generics, and a construct written in a way its patterns do not
+  anticipate is missed. It is built to fail by omission: a missed method costs
+  a search result, an invented one sends a reader to a line that means
+  something else. Add a test to `tests/test_csharp_parser.py` for anything it
+  misses rather than loosening a pattern until something matches.
+- C# `using` directives name namespaces, not files, so a C#-only project has a
+  symbol index but almost no import graph. Entry points and hub files are
+  correspondingly weak there.
+- Search reads names and docstrings. It has no idea that "sign in" and "login"
+  are the same question; a synonym is a model's job, not an index's.
 
 ## Conventions
 

@@ -115,8 +115,8 @@ class TestFindings:
 
     def test_unparsed_languages_are_reported(self, make_project):
         # Being explicit about coverage beats letting a reader assume it.
-        layout = {"a.py": "x = 1\n", "Main.cs": "class M {}\n", "Other.cs": "class O {}\n"}
-        assert summarise(make_project, layout).unparsed_languages == {".cs": 2}
+        layout = {"a.py": "x = 1\n", "main.go": "package main\n", "b.go": "package b\n"}
+        assert summarise(make_project, layout).unparsed_languages == {".go": 2}
 
     def test_fully_parsed_project_reports_none(self, make_project):
         assert summarise(make_project, {"a.py": "x = 1\n"}).unparsed_languages == {}
