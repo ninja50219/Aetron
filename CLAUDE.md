@@ -213,6 +213,21 @@ python -m pytest
 Append one entry per session. State what landed and what the next session
 should pick up.
 
+### 2026-09-14 — visual frontend
+
+Extended the browsing task with `python -m aetron ui` and a Windows double-click
+launcher, `Aetron.cmd`. The loopback-only standard-library server serves a local
+HTML/CSS/JavaScript workspace and enforces search, outline, then source access.
+Project history is shared with the terminal menu. Refresh invalidates previous
+selections; source and project text are inserted as text, never executable HTML.
+No scanner, analyzer, context, or dependency changes were needed.
+
+Verified in the browser against the user's myminecraft project, from the
+movment search to PlayerMovement.Update at lines 50–55. Tests: 490 passed with
+pathspec; 485 passed and 5 skipped without it. The existing search spelling
+and duplicate-qualified-name limitations remain; this frontend does not change
+retrieval semantics.
+
 ### 2026-09-14 — interactive project browsing
 
 Added a standard-library terminal menu for `python -m aetron` without arguments.

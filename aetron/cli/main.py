@@ -517,6 +517,12 @@ def command_explain(args, root: Path) -> None:
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["ui"]:
+        from aetron.web import main as web_main
+
+        web_main(sys.argv[2:])
+        return
+
     if not sys.argv[1:]:
         from .interactive import run
 

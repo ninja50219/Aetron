@@ -80,6 +80,16 @@ back to its built-in ignore rules instead of reading `.gitignore`.
 
 ## Interactive browsing
 
+For the visual frontend, double-click `Aetron.cmd` on Windows, or run
+`python -m aetron ui`. A browser opens a local code explorer with recent
+projects, search results, clickable definitions, a source viewer, project
+overview and omitted-file reports. Keep the terminal open while using it;
+Ctrl+C stops the server. `--no-browser` prints the URL without opening it,
+and `--port 8765` selects a fixed port instead of an automatically chosen one.
+The server listens only on `127.0.0.1`, uses no external assets or services,
+and shares project history with the terminal menu. Search spelling matters:
+the existing index matches names and docstrings, not synonyms or fuzzy terms.
+
 Run `python -m aetron` without arguments to open the menu. Choose a recent
 project by number, or enter a new project directory once. Recent paths are
 saved in `~/.aetron/recent-projects.json`; unavailable paths remain listed so
