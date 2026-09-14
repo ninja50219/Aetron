@@ -78,6 +78,29 @@ pip install -r requirements.txt
 The only dependency is `pathspec`, and it is optional: without it Aetron falls
 back to its built-in ignore rules instead of reading `.gitignore`.
 
+## Interactive browsing
+
+Run `python -m aetron` without arguments to open the menu. Choose a recent
+project by number, or enter a new project directory once. Recent paths are
+saved in `~/.aetron/recent-projects.json`; unavailable paths remain listed so
+temporarily disconnected projects are not forgotten.
+
+Choose **Find something**, enter a search term, choose a matching file, then
+choose a definition to read its numbered source. File paths and symbol names
+are always selected by number. **Explore the project** shows the offline
+report and its limitations; **Review omitted files** lists skipped files with
+their reasons. Pruned directories are listed when loading the project.
+
+The menu scans and analyzes once per project selection. After editing code,
+choose **Rescan the project** to refresh the index. Enter `0` to go back;
+Ctrl+C or end-of-input exits from any prompt. The menu uses plain English text
+without terminal colors and requires only the standard library.
+
+Definitions sharing the same qualified name cannot be selected individually
+through the current source API. The menu reports this limitation instead of
+showing a different definition. All eight explicit CLI commands and the
+legacy `python -m aetron PATH` scan shortcut remain available.
+
 ## Usage
 
 List what a project contains:

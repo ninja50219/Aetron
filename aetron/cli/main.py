@@ -517,6 +517,12 @@ def command_explain(args, root: Path) -> None:
 
 
 def main() -> None:
+    if not sys.argv[1:]:
+        from .interactive import run
+
+        run()
+        return
+
     parser = build_parser()
 
     # "aetron ." and "aetron -q ." keep working: scanning is the default, and

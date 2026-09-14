@@ -213,6 +213,21 @@ python -m pytest
 Append one entry per session. State what landed and what the next session
 should pick up.
 
+### 2026-09-14 — interactive project browsing
+
+Added a standard-library terminal menu for `python -m aetron` without arguments.
+It remembers project paths, keeps scan and analysis results until refresh, and
+passes numbered file and definition choices through the public retrieval API.
+Explicit commands keep their existing dispatch. History failures and cancelled
+input are reported without interrupting normal navigation. No scanner, analyzer,
+or context files were changed.
+
+Validation: 483 tests passed with pathspec; 478 passed and 5 skipped without it.
+The source API cannot distinguish definitions sharing a qualified name by line
+number. The menu explains this limitation instead of returning the first match
+for a different numbered choice; a future API change would be needed to support
+that case.
+
 ### 2026-07-29 — scan, parse, index
 
 Stages 1–4 plus the deterministic half of the context stage, merged in PRs #1
