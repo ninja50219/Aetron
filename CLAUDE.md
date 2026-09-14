@@ -147,7 +147,8 @@ aetron/
 │                 resolved to one definition; the only module
 │                 that knows both halves of Aetron                 DONE
 ├── web.py        loopback server owning one project's index       DONE
-├── web_ui/       one HTML page: ask, explore, overview            DONE
+├── web_ui/       index.html, app.css, app.js - ask, explore,
+│                 overview, in a light and a dark theme             DONE
 └── cli/          eight subcommands plus `ui`, and a menu when
                   run with no arguments                            DONE
 ```
@@ -172,7 +173,9 @@ standard library, not by reading the README.
   `source`, `ask`, the `ui` command, and a numbered menu when run bare.
 - `web.py` and `web_ui/` — the local page. Asking runs on a thread and the
   page polls, so the single-threaded server stays answerable while a local
-  model takes its minutes, and the steps appear as they happen.
+  model takes its minutes, and the steps appear as they happen. CSS and
+  JavaScript are separate files served from a two-entry allowlist, which is
+  what lets the Content-Security-Policy refuse inline styles outright.
 
 **Not built — this is the work:**
 
@@ -260,6 +263,33 @@ python -m pytest
 
 Append one entry per session. State what landed and what the next session
 should pick up.
+
+### 2026-09-14 — the redesign and the model, merged
+
+Two pieces of work had been built on the same base in parallel: a frontend
+redesign (light and dark themes, dialogs, keyboard shortcuts, a language
+filter, CSS and JavaScript split out of `index.html` into `app.css` and
+`app.js`, and a Content-Security-Policy with no `unsafe-inline` for styles),
+and the question-answering above, written inline in the page the redesign
+deleted. `main` now has both.
+
+`web.py` merged on its own - the asset allowlist and the tightened policy do
+not touch the ask job. The page did not: the ask panel, its styles and its
+logic were ported by hand into the three new files, following the conventions
+already there (`node`, `work`, `show`, `view`, the `--accent` token, the
+existing `.source-code` line rendering, which the answer's code block now
+reuses).
+
+The one real casualty of the stricter policy was the confidence ring, which
+set a CSS custom property on an element and so depended on an inline style.
+It is now an SVG whose `stroke-dasharray` is set as a presentation attribute -
+not a style at all, so nothing about it is subject to `style-src`. It also
+looks better. Verified in the browser in both themes and at phone width, with
+the console watched for policy violations; the only remaining 404 is the
+favicon, which predates all of this.
+
+Also fixed: the trail counted ANSWER as a request while the answer card did
+not, so the same run reported 4 requests in one place and 3 in another.
 
 ### 2026-09-14 — the frontend asks the model
 

@@ -246,6 +246,7 @@ class Workspace:
 def make_server(workspace, port=0):
     token = secrets.token_urlsafe(32)
     page = (Path(__file__).with_name("web_ui") / "index.html").read_text(encoding="utf-8")
+    assets = {"/app.css": "text/css", "/app.js": "text/javascript"}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -259,7 +260,7 @@ def make_server(workspace, port=0):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'nonce-" + token + "'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'nonce-" + token + "'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
             self.end_headers()
             self.wfile.write(content)
 
@@ -273,6 +274,9 @@ def make_server(workspace, port=0):
                 self.respond(403, '{}')
             elif self.path == "/":
                 self.respond(200, page.replace("__TOKEN__", token), "text/html")
+            elif self.path in assets:
+                body = (Path(__file__).with_name("web_ui") / self.path[1:]).read_text(encoding="utf-8")
+                self.respond(200, body, assets[self.path])
             else:
                 self.respond(404, '{}')
 
