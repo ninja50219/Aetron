@@ -17,6 +17,7 @@ be wrong. So the slice is checked against what the index expects to find there,
 and a mismatch is reported rather than smoothed over.
 """
 
+import difflib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -111,7 +112,7 @@ def get_source(
     symbol, matches = _find_symbol(analysis, rel_path, name)
 
     if symbol is None:
-        problem = f"no definition called {name!r} in {rel_path}"
+        problem = _no_such_definition(analysis, rel_path, name)
         if not any(f.rel_path == rel_path for f in analysis.files):
             problem = f"{rel_path} is not an analysed file in this project"
         return SourceSlice(
@@ -206,3 +207,43 @@ def _attached_start(lines: list[str], definition_line: int, lead: int) -> int:
         start -= 1
 
     return start
+
+
+SUGGESTION_LIMIT = 3
+
+
+def _no_such_definition(analysis: AnalysisResult, rel_path: str, name: str) -> str:
+    """Say the name is not there, and offer the ones it was probably meant to be.
+
+    The caller has usually just read this file's skeleton and typed a name from
+    memory or from a slightly different spelling. Naming the near misses turns
+    a dead end into one more request.
+    """
+    found = next((f for f in analysis.files if f.rel_path == rel_path), None)
+    if found is None:
+        return f"no definition called {name!r} in {rel_path}"
+
+    # Matched against plain names as well as qualified ones: a caller who
+    # mistypes "dealDamage" is nowhere near "CombatService.dealDamage" by any
+    # string measure, and the plain name is what they were reaching for. The
+    # qualified form is what comes back, because that is what resolves.
+    qualified_by_plain: dict[str, str] = {}
+    for symbol in found.symbols:
+        qualified = symbol.qualified_name or symbol.name
+        qualified_by_plain.setdefault(symbol.name, qualified)
+        qualified_by_plain.setdefault(qualified, qualified)
+
+    plain = name.rsplit(".", 1)[-1]
+    close = difflib.get_close_matches(
+        plain, list(qualified_by_plain), n=SUGGESTION_LIMIT, cutoff=0.6
+    )
+
+    if not close:
+        return f"no definition called {name!r} in {rel_path}"
+
+    suggestions = list(dict.fromkeys(qualified_by_plain[match] for match in close))
+    return (
+        f"no definition called {name!r} in {rel_path}; did you mean "
+        + ", ".join(suggestions[:SUGGESTION_LIMIT])
+        + "?"
+    )

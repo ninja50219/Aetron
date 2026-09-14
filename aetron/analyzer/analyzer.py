@@ -13,7 +13,7 @@ from pathlib import Path
 from aetron.scanner.detect import read_source
 from aetron.scanner.scanner import ScanResult
 
-from . import csharp_parser, javascript_parser, python_parser
+from . import csharp_parser, javascript_parser, lua_parser, python_parser
 from .deadcode import DeadCodeCandidate, find_dead_code
 from .resolver import build_module_map, is_path_import, resolve, resolve_path_import
 from .symbols import FileSymbols, Symbol, SymbolKind
@@ -25,6 +25,7 @@ PARSERS: dict[str, Callable[[str, str], FileSymbols]] = {
     csharp_parser.LANGUAGE: csharp_parser.parse,
     javascript_parser.LANGUAGE: javascript_parser.parse,
     javascript_parser.TYPESCRIPT: javascript_parser.parse,
+    lua_parser.LANGUAGE: lua_parser.parse,
 }
 
 ProgressCallback = Callable[[int, str], None]

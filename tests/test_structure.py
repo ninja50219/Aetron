@@ -166,3 +166,18 @@ class TestRendering:
     def test_no_bodies_are_rendered(self, make_project):
         layout = {"a.py": "def login():\n    secret = 'do not leak this'\n"}
         assert "do not leak this" not in render(structure_of(make_project, layout, "a.py"))
+
+
+class TestSuggestingWhatWasMeant:
+    """A path is easy to get almost right in a project of any size, and "not in
+    this index" leaves the caller no better off."""
+
+    def test_the_right_name_in_the_wrong_directory(self, make_project):
+        layout = {"src/shared/Config.luau": "local M = {}\nreturn M\n"}
+        structure = structure_of(make_project, layout, "Config.luau")
+        assert "did you mean src/shared/Config.luau?" in structure.unavailable
+
+    def test_a_path_nothing_resembles_gets_no_guess(self, make_project):
+        layout = {"src/shared/Config.luau": "local M = {}\nreturn M\n"}
+        structure = structure_of(make_project, layout, "nowhere/at/all.luau")
+        assert "did you mean" not in structure.unavailable

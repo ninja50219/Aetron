@@ -29,6 +29,7 @@ from aetron.analyzer import analyze
 from aetron.analyzer.analyzer import AnalysisResult
 from aetron.analyzer.deadcode import Confidence
 from aetron.analyzer.symbols import SymbolKind
+from aetron.context.render import render_summary
 from aetron.context.search import DEFAULT_LIMIT, search
 from aetron.context.source import get_source
 from aetron.context.structure import build_structure, render
@@ -40,7 +41,9 @@ from aetron.scanner.paths import InvalidPathError, normalize_path
 
 PREVIEW_LIMIT = 5
 
-COMMANDS = ("scan", "analyze", "summary", "search", "structure", "source", "ask")
+COMMANDS = (
+    "scan", "analyze", "explain", "summary", "search", "structure", "source", "ask"
+)
 
 
 def prompt_for_path() -> Path:
@@ -216,6 +219,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     subcommands.add_parser(
         "summary", parents=[common], help="what a newcomer to this project reads first"
+    )
+
+    subcommands.add_parser(
+        "explain",
+        parents=[common],
+        help="a full offline report: structure, findings and what the analysis missed",
     )
 
     # The three retrieval levels. Each is its own command because escalating to
@@ -500,6 +509,13 @@ def command_ask(args, root: Path) -> None:
         print(f"\n({requests} requests; source read from: {read})")
 
 
+def command_explain(args, root: Path) -> None:
+    """The whole project as one offline report, including what was missed."""
+    scan_result = run_scan(args, root)
+    summary = build_summary(scan_result, analyze(scan_result))
+    print(render_summary(summary), end="")
+
+
 def main() -> None:
     parser = build_parser()
 
@@ -526,6 +542,7 @@ def main() -> None:
 
     handlers = {
         "analyze": command_analyze,
+        "explain": command_explain,
         "summary": command_summary,
         "search": command_search,
         "structure": command_structure,

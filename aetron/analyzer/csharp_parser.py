@@ -26,6 +26,8 @@ swallow the rest of the project's understanding of it.
 import re
 from dataclasses import dataclass
 
+from aetron.scanner.detect import count_lines
+
 from .references import references_excluding_declarations
 from .symbols import FileSymbols, ImportRef, Symbol, SymbolKind
 
@@ -145,7 +147,7 @@ def parse(text: str, rel_path: str) -> FileSymbols:
             name=name,
             kind=SymbolKind.MODULE,
             line=1,
-            end_line=len(text.splitlines()) or 1,
+            end_line=count_lines(text) or 1,
             qualified_name=name,
         )
     )

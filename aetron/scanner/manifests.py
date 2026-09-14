@@ -80,6 +80,40 @@ def _parse_cargo_toml(text: str) -> list[tuple[str, str]]:
     return found
 
 
+def _parse_wally_toml(text: str) -> list[tuple[str, str]]:
+    """Wally, the package manager Roblox projects use.
+
+    A dependency is written "Signal = \"sleitnick/signal@1.5.0\"", so the scope,
+    the package and the version all arrive in one string. The name people use
+    is the left-hand side - it is what the code requires - and the right is
+    where it came from.
+    """
+    data = tomllib.loads(text)
+    found = []
+    for section in ("dependencies", "dev-dependencies", "server-dependencies"):
+        for name, spec in (data.get(section) or {}).items():
+            if not isinstance(spec, str):
+                continue
+            _, _, version = spec.rpartition("@")
+            found.append((name, version or ANY_VERSION))
+    return found
+
+
+def _parse_aftman_toml(text: str) -> list[tuple[str, str]]:
+    """Aftman pins the command-line tools a project is built with.
+
+    Not libraries the code imports, but they say what the project is: a
+    manifest naming rojo and wally is a Roblox project and nothing else.
+    """
+    data = tomllib.loads(text)
+    found = []
+    for name, spec in (data.get("tools") or {}).items():
+        if isinstance(spec, str):
+            _, _, version = spec.rpartition("@")
+            found.append((name, version or ANY_VERSION))
+    return found
+
+
 def _parse_go_mod(text: str) -> list[tuple[str, str]]:
     found = []
     in_block = False
@@ -153,6 +187,8 @@ PARSERS_BY_NAME = {
     "go.mod": ("go", _parse_go_mod),
     "pom.xml": ("java", _parse_pom_xml),
     "composer.json": ("php", _parse_composer_json),
+    "wally.toml": ("roblox", _parse_wally_toml),
+    "aftman.toml": ("roblox", _parse_aftman_toml),
 }
 
 # Extensions, for manifests whose name varies with the project.

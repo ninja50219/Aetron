@@ -56,6 +56,14 @@ Library/PackageCache
 /MemoryCaptures
 /Recordings
 
+# --- roblox: wally puts third-party code under Packages/_Index ---
+# Anchored and named to _Index on purpose: Unity also has a Packages directory
+# and keeps it under version control, so a bare "Packages" rule would delete
+# real source from a different ecosystem.
+Packages/_Index
+ServerPackages/_Index
+DevPackages/_Index
+
 # --- unreal ---
 /Intermediate
 /DerivedDataCache

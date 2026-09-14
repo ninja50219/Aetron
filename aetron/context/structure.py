@@ -25,6 +25,7 @@ full docstring is prose that can run to a page, and at that point the skeleton
 stops being cheaper than the code.
 """
 
+import difflib
 from dataclasses import asdict, dataclass, field
 
 from aetron.analyzer.analyzer import AnalysisResult
@@ -175,7 +176,7 @@ def build_structure(
                 "no parser for this language yet; the file was scanned but not read"
             )
         else:
-            structure.unavailable = "not a file in this project's index"
+            structure.unavailable = _not_found(scan_result, rel_path)
         return structure
 
     if found.parse_error:
@@ -229,3 +230,36 @@ def render(structure: FileStructure) -> str:
         parts.append(f"  imported by: {', '.join(structure.imported_by)}")
 
     return "\n".join(parts)
+
+
+# How many near misses to offer. One is usually right and four is a list to
+# read rather than an answer.
+SUGGESTION_LIMIT = 3
+
+
+def _not_found(scan_result: ScanResult, rel_path: str) -> str:
+    """Say the file is not here, and name the ones it was probably meant to be.
+
+    A path is easy to get almost right in a project of any size - a directory
+    left out, a name remembered without its folder - and "not in this project's
+    index" is true but leaves the caller no better off. A model reading this is
+    in exactly that position and can act on a name.
+    """
+    known = [f.rel_path for f in scan_result.files]
+    wanted = rel_path.replace("\\", "/").strip("/")
+    base = wanted.rsplit("/", 1)[-1]
+
+    # A file whose name matches exactly and whose directory does not is the
+    # common case, and closer to what was meant than any string distance.
+    same_name = [path for path in known if path.rsplit("/", 1)[-1] == base]
+    close = difflib.get_close_matches(wanted, known, n=SUGGESTION_LIMIT, cutoff=0.6)
+
+    suggestions = list(dict.fromkeys([*same_name, *close]))[:SUGGESTION_LIMIT]
+    if not suggestions:
+        return "not a file in this project's index"
+
+    return (
+        "not a file in this project's index; did you mean "
+        + ", ".join(suggestions)
+        + "?"
+    )

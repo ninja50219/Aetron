@@ -38,6 +38,38 @@ class TestBasics:
             scan(tmp_path / "nope")
 
 
+class TestRoblox:
+    """A Rojo project is written in Luau and vendors with Wally. Before this
+    was handled, such a project scanned as either empty or as nothing but
+    third-party code."""
+
+    def test_luau_files_are_source(self, make_project):
+        root = make_project({"src/Combat.luau": "local m = {}\nreturn m\n"})
+        assert rel_paths(scan(root).files) == {"src/Combat.luau"}
+
+    def test_wally_packages_are_not_the_projects_code(self, make_project):
+        root = make_project(
+            {
+                "wally.toml": '[package]\nname = "a/b"\n',
+                "src/Combat.luau": "local m = {}\nreturn m\n",
+                "Packages/_Index/sleitnick_signal@1.5.0/signal/init.lua": "return {}\n",
+            }
+        )
+        assert rel_paths(scan(root).files) == {"src/Combat.luau"}
+
+    def test_a_unity_packages_directory_is_still_source(self, make_project):
+        """Unity keeps Packages under version control, so the rule names
+        Wally's _Index rather than every directory called Packages."""
+        root = make_project(
+            {
+                "ProjectSettings/ProjectVersion.txt": "x",
+                "Packages/manifest.json": "{}",
+                "Packages/local.package/Runtime/Thing.cs": "class T {}\n",
+            }
+        )
+        assert rel_paths(scan(root).files) == {"Packages/local.package/Runtime/Thing.cs"}
+
+
 class TestPruning:
     def test_ignored_directory_is_not_walked(self, make_project):
         root = make_project({"src/app.py": "x = 1\n", "node_modules/dep/index.js": "x"})
