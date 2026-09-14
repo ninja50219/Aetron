@@ -239,3 +239,167 @@ class TestWhatTheModelIsTold:
         model = Scripted("ANSWER done")
         ask(model, scan_result, analysis, "q")
         assert "no parser" in model.prompts[0]
+
+
+MOVEMENT = {
+    "Player/PlayerMovement.cs": (
+        "using UnityEngine;\n"
+        "\n"
+        "public class PlayerMovement : MonoBehaviour\n"
+        "{\n"
+        "    private float speed = 5f;\n"
+        "\n"
+        "    void HandleWasdInput()\n"
+        "    {\n"
+        "        float x = Input.GetAxis(\"Horizontal\");\n"
+        "        transform.Translate(new Vector3(x, 0, 0) * speed);\n"
+        "    }\n"
+        "\n"
+        "    void Jump()\n"
+        "    {\n"
+        "        body.AddForce(Vector3.up);\n"
+        "    }\n"
+        "}\n"
+    ),
+    "Systems/SaveSystem.cs": (
+        "public class SaveSystem\n"
+        "{\n"
+        "    public void WriteSlot(int slot)\n"
+        "    {\n"
+        "        File.WriteAllText(\"save.json\", \"{}\");\n"
+        "    }\n"
+        "}\n"
+    ),
+}
+
+WALKED = (
+    "SEARCH movement",
+    "STRUCTURE Player/PlayerMovement.cs",
+    "SOURCE Player/PlayerMovement.cs PlayerMovement.HandleWasdInput",
+    "ANSWER Movement is in Player/PlayerMovement.cs, HandleWasdInput at line 7.",
+)
+
+
+class TestTheAnswerPointsSomewhere:
+    """An answer that cannot be opened is a paragraph, not an answer."""
+
+    def test_a_walked_protocol_resolves_to_the_definition_that_was_read(self, project):
+        scan_result, analysis = project(MOVEMENT)
+        answer = ask(Scripted(*WALKED), scan_result, analysis, "where is movement?")
+
+        citation = answer.citation
+        assert citation is not None
+        assert citation.rel_path == "Player/PlayerMovement.cs"
+        assert citation.qualified_name == "PlayerMovement.HandleWasdInput"
+        assert citation.kind == "method"
+        assert citation.location == "Player/PlayerMovement.cs:7"
+        assert "Input.GetAxis" in citation.text
+        # One definition, not the file it lives in: Jump is next door and stays
+        # there, which is the whole economy of the level this came from.
+        assert "AddForce" not in citation.text
+
+    def test_every_check_passing_is_what_a_hundred_means(self, project):
+        scan_result, analysis = project(MOVEMENT)
+        answer = ask(Scripted(*WALKED), scan_result, analysis, "where is movement?")
+
+        assert answer.citation.confidence == 100
+        assert answer.citation.checks_passed == 4
+        assert all(check.passed for check in answer.citation.checks)
+
+    def test_answering_from_an_outline_alone_scores_lower_than_reading_it(self, project):
+        scan_result, analysis = project(MOVEMENT)
+        answer = ask(
+            Scripted(
+                "SEARCH movement",
+                "STRUCTURE Player/PlayerMovement.cs",
+                "ANSWER Movement is in Player/PlayerMovement.cs, HandleWasdInput at line 7.",
+            ),
+            scan_result,
+            analysis,
+            "where is movement?",
+        )
+
+        assert answer.citation.qualified_name == "PlayerMovement.HandleWasdInput"
+        assert answer.citation.confidence == 70
+        failed = [check.name for check in answer.citation.checks if not check.passed]
+        assert failed == ["read"]
+        # The code is still shown. The person asking is not the model, and the
+        # loop that the levels ration is over by the time this is fetched.
+        assert "Input.GetAxis" in answer.citation.text
+
+    def test_a_line_number_alone_finds_the_definition_around_it(self, project):
+        scan_result, analysis = project(MOVEMENT)
+        answer = ask(
+            Scripted(
+                "SEARCH movement",
+                "STRUCTURE Player/PlayerMovement.cs",
+                "ANSWER It is at Player/PlayerMovement.cs:9.",
+            ),
+            scan_result,
+            analysis,
+            "where is movement?",
+        )
+
+        assert answer.citation.qualified_name == "PlayerMovement.HandleWasdInput"
+
+    def test_an_absent_feature_cites_nothing(self, project):
+        scan_result, analysis = project(MOVEMENT)
+        answer = ask(
+            Scripted(
+                "SEARCH multiplayer",
+                "ANSWER This project contains no multiplayer code.",
+            ),
+            scan_result,
+            analysis,
+            "where is multiplayer?",
+        )
+
+        assert answer.text
+        assert answer.citation is None
+
+    def test_naming_a_file_it_never_looked_at_cites_nothing(self, project):
+        scan_result, analysis = project(MOVEMENT)
+        answer = ask(
+            Scripted("ANSWER Movement is in Player/PlayerMovement.cs at line 7."),
+            scan_result,
+            analysis,
+            "where is movement?",
+        )
+
+        # The sentence may even be right. It is still a guess, and a line
+        # number beside a guess is the thing this project exists not to do.
+        assert answer.citation is None
+
+    def test_the_definition_named_in_the_answer_wins_over_the_rest(self, project):
+        scan_result, analysis = project(MOVEMENT)
+        answer = ask(
+            Scripted(
+                "SEARCH movement",
+                "STRUCTURE Player/PlayerMovement.cs",
+                "ANSWER Jumping is handled by Jump.",
+            ),
+            scan_result,
+            analysis,
+            "where is jumping?",
+        )
+
+        assert answer.citation.qualified_name == "PlayerMovement.Jump"
+
+    def test_a_citation_survives_a_model_that_answers_in_prose(self, project):
+        scan_result, analysis = project(MOVEMENT)
+        answer = ask(
+            Scripted(
+                "SEARCH save",
+                "STRUCTURE Systems/SaveSystem.cs",
+                "SOURCE Systems/SaveSystem.cs SaveSystem.WriteSlot",
+                "Sure!\n"
+                "ANSWER Saving writes a slot in Systems/SaveSystem.cs, "
+                "WriteSlot at line 3.",
+            ),
+            scan_result,
+            analysis,
+            "how does saving work?",
+        )
+
+        assert answer.citation.location == "Systems/SaveSystem.cs:3"
+        assert answer.citation.confidence == 100

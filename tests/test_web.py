@@ -3,12 +3,18 @@
 HTTP requests must not turn a local code viewer into a filesystem service for
 other websites. Real pipeline fixtures also catch stale selections after a
 project refresh, which ordinary command-line tests cannot exercise.
+
+The question-answering tests use a scripted model for the same reason the
+command-line ones do, with one addition: here it answers on a background
+thread, so they also cover the part a caller gets wrong - a page that polls
+forever because nothing ever set done.
 """
 
 from http.client import HTTPConnection
 import json
 import re
-from threading import Thread
+from threading import Event, Thread
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -117,3 +123,149 @@ def test_malformed_request_does_not_stop_server(http):
     assert http("POST", "/api/state", "[", headers)[0] == 400
     assert http("POST", "/api/state", "[]", headers)[0] == 400
     assert http("POST", "/api/state", "{}", headers)[0] == 200
+
+
+class Scripted:
+    """A model that says exactly what it was told to, on its own thread."""
+
+    name, model = "scripted", "test"
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+
+    def complete(self, system, messages):
+        if not self.replies:
+            raise web.ProviderError("the model ran out of replies")
+        return self.replies.pop(0)
+
+
+def use_model(monkeypatch, *replies):
+    monkeypatch.setattr(web, "get_provider", lambda *a, **k: Scripted(*replies))
+
+
+def wait_for_answer(ws, timeout=10.0):
+    """Poll the way the page does, and fail loudly rather than hanging."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = call(ws, "ask_status")
+        if state["done"]:
+            return state
+        time.sleep(0.02)
+    raise AssertionError("the question was never answered")
+
+
+@pytest.fixture
+def game(tmp_path, make_project):
+    root = make_project(
+        {
+            "Player/PlayerMovement.cs": (
+                "public class PlayerMovement\n"
+                "{\n"
+                "    void HandleWasdInput()\n"
+                "    {\n"
+                "        Translate(Input.GetAxis(\"Horizontal\"));\n"
+                "    }\n"
+                "}\n"
+            )
+        }
+    )
+    ws = web.Workspace(tmp_path / "history.json")
+    ws.request("open", {"path": str(root)})
+    return ws
+
+
+def test_a_question_returns_a_definition_the_page_can_show(game, monkeypatch):
+    use_model(
+        monkeypatch,
+        "SEARCH movement",
+        "STRUCTURE Player/PlayerMovement.cs",
+        "SOURCE Player/PlayerMovement.cs PlayerMovement.HandleWasdInput",
+        "ANSWER Movement is in Player/PlayerMovement.cs, HandleWasdInput at line 3.",
+    )
+    started = call(game, "ask", question="where is movement?")
+    assert started["provider"] == "scripted (test)"
+
+    answer = wait_for_answer(game)["answer"]
+    citation = answer["citation"]
+    assert citation["location"] == "Player/PlayerMovement.cs:3"
+    assert citation["qualified_name"] == "PlayerMovement.HandleWasdInput"
+    assert citation["confidence"] == 100
+    assert "GetAxis" in citation["text"]
+    assert answer["files_read"] == ["Player/PlayerMovement.cs"]
+
+
+def test_the_steps_are_visible_while_they_happen(game, monkeypatch):
+    use_model(
+        monkeypatch,
+        "SEARCH movement",
+        "ANSWER Movement is in Player/PlayerMovement.cs.",
+    )
+    call(game, "ask", question="where is movement?")
+    steps = wait_for_answer(game)["steps"]
+    assert [step["command"] for step in steps] == ["SEARCH", "ANSWER"]
+    # What the model asked for, not what came back: a skeleton belongs on the
+    # page as a skeleton, not as a line of someone else's search results.
+    assert steps[0]["argument"] == "movement"
+    assert steps[0]["note"] == ""
+
+
+def test_a_model_that_is_not_running_says_so(game, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise web.ProviderError("Could not reach Ollama. Is it running?")
+
+    monkeypatch.setattr(web, "get_provider", refuse)
+    with pytest.raises(ValueError, match="Could not reach Ollama"):
+        call(game, "ask", question="where is movement?")
+
+
+def test_a_model_that_dies_mid_question_does_not_leave_the_page_waiting(
+    game, monkeypatch
+):
+    use_model(monkeypatch)  # no replies: the first request fails
+    call(game, "ask", question="where is movement?")
+    assert "ran out of replies" in wait_for_answer(game)["answer"]["incomplete"]
+
+
+def test_rescanning_is_refused_while_a_question_is_in_flight(game, monkeypatch):
+    # A real job is a thread holding the index it was started with. Blocking
+    # the model rather than faking the flag is what makes this the actual race:
+    # a rescan here would swap the project out from under a live question.
+    released = Event()
+
+    class Slow(Scripted):
+        def complete(self, system, messages):
+            released.wait(timeout=5)
+            return super().complete(system, messages)
+
+    monkeypatch.setattr(web, "get_provider", lambda *a, **k: Slow("ANSWER done"))
+    call(game, "ask", question="where is movement?")
+    try:
+        with pytest.raises(ValueError, match="still being answered"):
+            call(game, "refresh")
+    finally:
+        released.set()
+    wait_for_answer(game)
+    call(game, "refresh")
+
+
+def test_an_empty_question_is_refused_before_a_model_is_asked(game, monkeypatch):
+    use_model(monkeypatch, "ANSWER nothing")
+    with pytest.raises(ValueError, match="Ask a question"):
+        call(game, "ask", question="   ")
+
+
+def test_a_cited_file_opens_in_the_explorer_without_searching_again(game, monkeypatch):
+    use_model(
+        monkeypatch,
+        "SEARCH movement",
+        "STRUCTURE Player/PlayerMovement.cs",
+        "ANSWER Movement is in Player/PlayerMovement.cs, HandleWasdInput at line 3.",
+    )
+    with pytest.raises(ValueError, match="search results"):
+        call(game, "structure", path="Player/PlayerMovement.cs")
+
+    call(game, "ask", question="where is movement?")
+    wait_for_answer(game)
+
+    outline = call(game, "structure", path="Player/PlayerMovement.cs")
+    assert outline["rel_path"] == "Player/PlayerMovement.cs"

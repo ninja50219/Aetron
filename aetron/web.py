@@ -4,6 +4,14 @@ The server is bound to loopback and owns one project's cached index. Requests
 carry a per-launch token and follow the same progressive disclosure contract
 as the model: search authorizes a file's outline, then its definitions. No
 generic filesystem endpoint is exposed, and project text is rendered as text.
+
+Asking a model runs on a thread rather than inside the request. A local
+seven-billion-parameter model answers in minutes, not milliseconds, and a
+handler that waits for it would block the single-threaded server - the page
+itself would stop loading while the question it asked was being answered. So
+the request starts the work and returns, and the page asks how it is going.
+That also gets the steps on screen as they happen, which is the honest way to
+show a protocol whose whole argument is that the expensive path is visible.
 """
 
 import argparse
@@ -13,15 +21,91 @@ import json
 from pathlib import Path
 import secrets
 import sys
+import threading
 import webbrowser
 
+from aetron.ai_providers import DEFAULT_PROVIDER, PROVIDERS, ProviderError, get_provider
 from aetron.analyzer import analyze
+from aetron.ask import MAX_STEPS, ask
 from aetron.cli.interactive import load_history, save_history
 from aetron.context import build_structure, build_summary, get_source, search
 from aetron.context.render import render_summary
 from aetron.scanner import scan
 from aetron.scanner.gitignore import AVAILABLE
 from aetron.scanner.paths import normalize_path
+
+
+class AskJob:
+    """One question in flight.
+
+    The thread writes steps and the request thread reads them, so both go
+    through the lock. Nothing here cancels: a provider call sits in a socket
+    read that cannot be interrupted politely, and a job left running is
+    harmless because a new question replaces it.
+    """
+
+    def __init__(self, question: str, provider) -> None:
+        self.question = question
+        self.provider = f"{provider.name} ({provider.model})"
+        self.steps: list[dict] = []
+        self.answer = None
+        self.error = ""
+        self.done = False
+        self._lock = threading.Lock()
+
+    def record(self, step) -> None:
+        with self._lock:
+            self.steps.append(
+                {
+                    "command": step.command,
+                    "argument": step.argument,
+                    "refused": step.refused,
+                    # The observation is the model's half of the protocol and
+                    # can be a whole file skeleton. The page shows what was
+                    # asked, not everything that came back.
+                    "note": step.observation.split("\n")[0][:160]
+                    if step.refused or step.command in ("", "ANSWER")
+                    else "",
+                }
+            )
+
+    def state(self) -> dict:
+        with self._lock:
+            result = {
+                "question": self.question,
+                "provider": self.provider,
+                "steps": list(self.steps),
+                "done": self.done,
+                "error": self.error,
+            }
+            if self.answer is not None:
+                result["answer"] = self.answer
+            return result
+
+    def finish(self, answer=None, error: str = "") -> None:
+        with self._lock:
+            self.answer = answer
+            self.error = error
+            self.done = True
+
+
+def describe_answer(answer) -> dict:
+    """An Answer as the page needs it: the sentence, and where to open it."""
+    result = {
+        "text": answer.text,
+        "incomplete": answer.incomplete,
+        "files_read": answer.files_read,
+        "requests": len(
+            [s for s in answer.steps if s.command and s.command != "ANSWER"]
+        ),
+        "citation": None,
+    }
+    if answer.citation is not None:
+        citation = asdict(answer.citation)
+        citation["location"] = answer.citation.location
+        citation["checks_passed"] = answer.citation.checks_passed
+        result["citation"] = citation
+    return result
 
 
 class Workspace:
@@ -33,9 +117,16 @@ class Workspace:
         self.candidates = set()
         self.outlines = {}
         self.revision = 0
+        self.job = None
+
+    @property
+    def asking(self) -> bool:
+        return self.job is not None and not self.job.done
 
     def state(self):
-        result = {"recent": self.history, "gitignore": AVAILABLE, "revision": self.revision}
+        result = {"recent": self.history, "gitignore": AVAILABLE, "revision": self.revision,
+                  "providers": list(PROVIDERS), "default_provider": DEFAULT_PROVIDER,
+                  "max_steps": MAX_STEPS}
         if self.scanned is not None:
             result.update({"root": str(self.scanned.root), "name": self.scanned.root.name,
                            "files": len(self.scanned.files), "lines": self.scanned.total_lines,
@@ -50,6 +141,11 @@ class Workspace:
         if action in ("open", "refresh"):
             if action == "refresh" and self.scanned is None:
                 raise ValueError("Open a project first.")
+            if self.asking:
+                # The running job holds this index and reads from it between
+                # steps. Swapping it underneath would answer the question
+                # against half of one project and half of another.
+                raise ValueError("A question is still being answered. Wait for it to finish.")
             root = normalize_path(data["path"] if action == "open" else str(self.scanned.root))
             scanned = scan(root, use_gitignore=True)
             analysis = analyze(scanned)
@@ -57,6 +153,7 @@ class Workspace:
             self.revision += 1
             self.candidates.clear()
             self.outlines.clear()
+            self.job = None
             self.history = [str(root), *(p for p in self.history if p != str(root))]
             save_history(self.history_path, self.history)
             return self.state()
@@ -92,7 +189,58 @@ class Workspace:
             return {**asdict(source), "location": source.location}
         if action == "summary":
             return {"text": render_summary(build_summary(self.scanned, self.analysis))}
+        if action == "ask":
+            return self.start_ask(data)
+        if action == "ask_status":
+            if self.job is None:
+                raise ValueError("No question has been asked yet.")
+            state = self.job.state()
+            citation = (state.get("answer") or {}).get("citation")
+            if citation:
+                # The model justified this file by the same three levels the
+                # explorer's own clicks go through, so opening it there next is
+                # a continuation of the answer rather than a way around it.
+                self.candidates.add(citation["rel_path"])
+            return state
         raise ValueError("Unknown action.")
+
+    def start_ask(self, data):
+        """Hand the question to a model, and return before it has answered."""
+        if self.asking:
+            raise ValueError("A question is still being answered.")
+
+        question = data.get("question", "").strip()
+        if not question:
+            raise ValueError("Ask a question, for example: where is movement?")
+
+        name = data.get("provider") or DEFAULT_PROVIDER
+        if name not in PROVIDERS:
+            raise ValueError(f"Unknown provider {name!r}.")
+
+        try:
+            # Built here rather than on the worker thread so that a missing
+            # package or a bad key is an error on the question, where the page
+            # can show it, instead of a job that starts and dies.
+            provider = get_provider(name, (data.get("model") or "").strip() or None)
+        except ProviderError as exc:
+            raise ValueError(str(exc)) from exc
+
+        job = AskJob(question, provider)
+        self.job = job
+        scanned, analysis = self.scanned, self.analysis
+
+        def run():
+            try:
+                answer = ask(provider, scanned, analysis, question, on_step=job.record)
+            except ProviderError as exc:
+                job.finish(error=str(exc))
+            except (OSError, ValueError, RuntimeError) as exc:
+                job.finish(error=f"The question could not be answered: {exc}")
+            else:
+                job.finish(answer=describe_answer(answer))
+
+        threading.Thread(target=run, daemon=True, name="aetron-ask").start()
+        return job.state()
 
 
 def make_server(workspace, port=0):

@@ -80,6 +80,30 @@ gets the lines `Symbol.line` through `Symbol.end_line` — one function, not the
 file it lives in. `end_line` is already recorded by the parser, so this is a
 slice, not a second parse.
 
+**The citation.** Not a level, and nothing the model can ask for: the thing
+Aetron does once the model has stopped. An answer is prose, and prose cannot be
+opened. So `ask.py` resolves the sentence into one definition - file, name,
+kind, line range and the code between - using only the steps the model
+actually ran. A model that names a file it never searched resolves to nothing,
+which is correct: the sentence may be right, but a line number beside a guess
+is the thing this project exists not to produce.
+
+Each citation carries a **confidence**, which is four checks and not an
+opinion:
+
+```
+ranked   25   a search returned this file, and at what percentage
+outline  25   the file's outline lists this definition, at these lines
+read     30   the model read this definition before answering
+named    20   the answer names the file or the definition it points at
+```
+
+100 means every check Aetron can make was made and held. It is deliberately a
+different quantity from the L1 percentage next door, which ranks a guess from
+names alone and never reaches 100 by design. Neither is a probability and
+neither may be shown as one - the UI prints "not a probability" under the
+number for exactly this reason.
+
 **Who enforces the rules.** `ask.py` checks them, rather than asking the model
 to follow them. A prompt is a request, and a model that ignored it would get
 source code it never justified asking for - the exact failure the levels exist
@@ -119,9 +143,13 @@ aetron/
 ├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#, JS/TS, Lua)
 ├── context/      the retrieval protocol, L1-L3, plus summary      DONE
 ├── ai_providers/ local and API models, behind one method          DONE
-├── ask.py        the model drives L1-L3; the only module that
-│                 knows both halves of Aetron                      DONE
-└── cli/          seven subcommands, one per stage and level       DONE
+├── ask.py        the model drives L1-L3, and the answer is
+│                 resolved to one definition; the only module
+│                 that knows both halves of Aetron                 DONE
+├── web.py        loopback server owning one project's index       DONE
+├── web_ui/       one HTML page: ask, explore, overview            DONE
+└── cli/          eight subcommands plus `ui`, and a menu when
+                  run with no arguments                            DONE
 ```
 
 ## State
@@ -129,7 +157,7 @@ aetron/
 Verified by running the suite and the tool against itself and against the
 standard library, not by reading the README.
 
-**Working and tested** (321 tests, ~0.6s):
+**Working and tested** (505 tests, ~3s):
 
 - `scanner/` — tree walk, four kinds of ignore rule anchored to detected
   project roots, `.gitignore` via `pathspec`, generated and minified detection,
@@ -138,7 +166,13 @@ standard library, not by reading the README.
   pattern, the first three by counting braces and Lua by counting `end`. Import resolution for both dotted modules and path-style
   specifiers, entry points, dead code graded high/medium/low.
 - `context/` — all three retrieval levels, plus `insights` and `summary`.
-- `cli/` — `scan`, `analyze`, `summary`, `search`, `structure`, `source`.
+- `ask.py` — the loop, the enforcement, and the citation that ends it.
+- `ai_providers/` — Ollama and Anthropic behind one `complete` method.
+- `cli/` — `scan`, `analyze`, `explain`, `summary`, `search`, `structure`,
+  `source`, `ask`, the `ui` command, and a numbered menu when run bare.
+- `web.py` and `web_ui/` — the local page. Asking runs on a thread and the
+  page polls, so the single-threaded server stays answerable while a local
+  model takes its minutes, and the steps appear as they happen.
 
 **Not built — this is the work:**
 
@@ -178,6 +212,20 @@ standard library, not by reading the README.
   invented edge would be worse than no edge.
 - Search reads names and docstrings. It has no idea that "sign in" and "login"
   are the same question; a synonym is a model's job, not an index's.
+- The `ranked` check passes by construction: only a file a search returned is
+  eligible to be cited at all, so a citation's floor is 25 and three of the
+  four checks are what actually vary. The check is kept because its detail
+  line carries the search percentage, which is the part a reader wants; if it
+  ever needs to discriminate, the thing to change is what it measures, not to
+  quietly drop it and leave the weights summing to 75.
+- A citation's confidence says the retrieval was sound, never that the answer
+  is right. A model can read the wrong method carefully and score 100. The
+  checks are there so a reader can see *what* was verified and disagree with
+  the conclusion, which is why the UI lists them rather than only the number.
+- A citation resolves to the narrowest definition that matches, because a
+  class contains its methods and "line 7" is true of both. That is right for
+  "where is movement" and wrong for a question whose answer really is the
+  whole class; the outline is one click away for that case.
 - `ask` has never been run against a real local model in this repository -
   there is no Ollama daemon in the environment it was written in. The loop,
   the parsing and the enforcement are covered by a scripted provider; how well
@@ -212,6 +260,50 @@ python -m pytest
 
 Append one entry per session. State what landed and what the next session
 should pick up.
+
+### 2026-09-14 — the frontend asks the model
+
+The page had all three levels as clicks and no way to ask a question, which is
+the thing the project is for. It has one now: a question goes to a provider,
+the steps appear as they run, and the answer arrives as one definition with
+its code, its line numbers and a confidence built from four checks.
+
+What landed:
+
+- `ask.py` resolves an Answer into a `Citation` - the narrowest definition the
+  model actually reached, never one it merely named. `Answer.citation` is
+  `None` when nothing supports a line number, and that is a real outcome
+  rather than a failure: "this project has no multiplayer code" has nothing to
+  cite and the UI drops the score rather than printing 0% beside a correct
+  answer.
+- `_without_paths` before matching names, because `PlayerMovement.cs` names
+  the class `PlayerMovement` by accident and the class was outranking the
+  method inside it that was the actual answer.
+- `web.py` grew `ask` and `ask_status`. The job runs on a thread: a local 7B
+  model answers in minutes and the single-threaded server would otherwise stop
+  serving its own page while waiting. A rescan is refused while a question is
+  in flight, since the job holds the index it started with.
+- A citation authorizes its file in the explorer, so clicking the answer's
+  location opens the outline without searching again.
+- `aetron ask` prints the same citation, plus the `aetron source` command that
+  shows the code. Both interfaces now end in the same place.
+
+Verified in a browser against a small Unity-shaped project: "where is
+movement?" returns `Player/PlayerMovement.cs:10`,
+`method PlayerMovement.HandleWasdInput`, 100%, with the WASD body on screen.
+Four paths driven end to end - the worked example, a citation opened in the
+explorer, an answer with nothing to cite, and Ollama not running. 490 tests
+became 505.
+
+Still open, in the order I would take them:
+
+1. **A real local model.** Unchanged from the last session and now the only
+   thing between this and knowing whether it works: every test uses a scripted
+   provider. The page makes this a ten-minute question for anyone with Ollama
+   installed - open a project, type a question, watch the trail. Expect the
+   system prompt to need work before the code does.
+2. **A Java or Go parser.** `csharp_parser.py` is the worked example.
+3. **A GPT or Gemini provider**, if wanted - one class, one method.
 
 ### 2026-09-14 — visual frontend
 

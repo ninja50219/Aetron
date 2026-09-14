@@ -81,9 +81,20 @@ back to its built-in ignore rules instead of reading `.gitignore`.
 ## Interactive browsing
 
 For the visual frontend, double-click `Aetron.cmd` on Windows, or run
-`python -m aetron ui`. A browser opens a local code explorer with recent
-projects, search results, clickable definitions, a source viewer, project
-overview and omitted-file reports. Keep the terminal open while using it;
+`python -m aetron ui`. A browser opens a local workspace with two ways to work.
+
+**Ask Aetron** is the question box. Type `where is movement?`, pick a model,
+and the page shows each request as it happens — the search, the one outline,
+the one definition — then the answer: a confidence ring, the file and line, and
+the body of the single method it points at. Clicking the location opens that
+file in the explorer. With Ollama selected nothing leaves the machine; the
+chip beside the model says so, and says the opposite when you choose a hosted
+provider. A local model can take minutes, and the page stays usable while it
+works.
+
+**Code explorer** is the same three levels by hand: recent projects, search
+results, clickable definitions, a source viewer, project overview and
+omitted-file reports. Keep the terminal open while using it;
 Ctrl+C stops the server. `--no-browser` prints the URL without opening it,
 and `--port 8765` selects a fixed port instead of an automatically chosen one.
 The server listens only on `127.0.0.1`, uses no external assets or services,
@@ -177,11 +188,23 @@ python -m aetron ask /path/to/project "where is login?"
 
 Login is handled in Controllers/LoginController.cs, LoginHandler at line 18.
 
+  Controllers/LoginController.cs:18  -  method LoginController.LoginHandler, lines 18-34
+  confidence 100% (4 of 4 checks passed)
+  aetron source /path/to/project Controllers/LoginController.cs LoginController.LoginHandler
+
 (3 requests; source read from: Controllers/LoginController.cs)
 ```
 
 The model never receives the repository. It searches, reads one file's shape,
 then asks for one definition — and the line it prints is one you can open.
+
+The last two lines are Aetron's, not the model's. The sentence is prose and
+cannot be opened, so the answer is resolved back into one definition using only
+the steps the model actually ran: a model that names a file it never searched
+gets no citation at all. The confidence is four checks — the file came back
+from a search, its outline lists this definition at these lines, the model read
+it, and the answer names it — so 100% means every check that could be made was
+made and held. It is not a probability that the answer is right.
 
 By default this runs against a local model through
 [Ollama](https://ollama.com), so nothing leaves the machine:
@@ -265,7 +288,10 @@ aetron/
 │   ├── summary.py    what a newcomer reads first
 │   └── render.py     the summary as an English report, claims nothing extra
 ├── ai_providers/     local models and API models, behind one method
-├── ask.py            the model drives the levels; the rules are enforced here
+├── ask.py            the model drives the levels, the rules are enforced
+│                     here, and the answer is resolved to one definition
+├── web.py            the local server behind `aetron ui`
+├── web_ui/           one page: ask a question, or browse the levels
 └── cli/              argument parsing and reporting
 ```
 

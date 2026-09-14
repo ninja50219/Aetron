@@ -502,6 +502,24 @@ def command_ask(args, root: Path) -> None:
     print(f"\n{answer.text}")
 
     if not args.quiet:
+        if answer.citation is not None:
+            # The sentence is the model's. This is Aetron's, and it is the part
+            # that can be opened: one definition, resolved from the steps that
+            # were actually run rather than from the sentence.
+            citation = answer.citation
+            print(
+                f"\n  {citation.location}  -  {citation.kind} "
+                f"{citation.qualified_name}, lines {citation.line}-{citation.end_line}"
+            )
+            print(
+                f"  confidence {citation.confidence}% "
+                f"({citation.checks_passed} of {len(citation.checks)} checks passed)"
+            )
+            print(
+                f"  aetron source {root} {citation.rel_path} "
+                f"{citation.qualified_name}"
+            )
+
         # What the answer actually cost: the levels are only worth having if
         # this stays short, so it is reported rather than left to be assumed.
         requests = len([s for s in answer.steps if s.command and s.command != "ANSWER"])
