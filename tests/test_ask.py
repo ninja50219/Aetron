@@ -165,7 +165,7 @@ class TestTheRulesAreEnforced:
         scan_result, analysis = project()
         model = Scripted("STRUCTURE auth/login.py", "SEARCH login", "ANSWER ok")
         answer = ask(model, scan_result, analysis, "q")
-        assert "SEARCH for it first" in answer.steps[0].observation
+        assert "SEARCH for a word in its name" in answer.steps[0].observation
         assert answer.steps[1].refused is False
 
     def test_the_rules_can_be_satisfied_after_being_refused(self, project):
@@ -482,3 +482,88 @@ class TestAKeyInTheProjectNeverReachesTheModel:
         assert "[hidden by Aetron: OpenAI API key]" in sent
         # The person asking, on their own machine, still sees the real line.
         assert key in answer.citation.text
+
+
+UNITY = {
+    "Assets/Scripts/PlayerMovment.cs": (
+        "public class PlayerMovment : MonoBehaviour\n"
+        "{\n"
+        "    void Update()\n"
+        "    {\n"
+        "        transform.Translate(Input.GetAxis(\"Horizontal\"), 0, 0);\n"
+        "    }\n"
+        "}\n"
+    ),
+    "Assets/Scripts/UI/HealthBar.cs": "public class HealthBar\n{\n    void Show() { }\n}\n",
+}
+
+
+class TestAFileNamedTheWayAModelWritesIt:
+    """From the first real model to run the protocol, qwen2.5-coder in the
+    page: it searched, was shown Assets/Scripts/PlayerMovment.cs, asked for
+    STRUCTURE PlayerMovment.cs, was told the file had never come up in a
+    search, searched again, and repeated that until twelve requests ran out."""
+
+    def test_the_real_trail_now_gets_past_the_outline(self, project):
+        scan_result, analysis = project(UNITY)
+        model = Scripted(
+            "SEARCH PlayerMovment",
+            "STRUCTURE PlayerMovment.cs",
+            "SOURCE PlayerMovment.cs PlayerMovment.Update",
+            "ANSWER Movement is in PlayerMovment.cs, PlayerMovment.Update at line 3.",
+        )
+        answer = ask(model, scan_result, analysis, "where is my movment script")
+
+        assert [s.refused for s in answer.steps] == [False, False, False, False]
+        # Recorded under the path that was read, so the trail names the file.
+        assert answer.steps[1].argument == "Assets/Scripts/PlayerMovment.cs"
+        assert answer.files_read == ["Assets/Scripts/PlayerMovment.cs"]
+        assert answer.citation.location == "Assets/Scripts/PlayerMovment.cs:3"
+        assert answer.citation.confidence == 100
+
+    def test_a_short_name_still_needs_a_search_first(self, project):
+        """The rule the refusal enforced is unchanged: nothing is read that no
+        search put forward."""
+        scan_result, analysis = project(UNITY)
+        model = Scripted("STRUCTURE PlayerMovment.cs", "ANSWER gave up")
+        answer = ask(model, scan_result, analysis, "q")
+        assert answer.steps[0].refused
+        assert "use the path exactly as the results give it" in answer.steps[0].observation
+
+    def test_a_name_that_fits_two_found_files_lists_both(self, project):
+        scan_result, analysis = project(
+            {"client/Input.cs": "class A { }\n", "server/Input.cs": "class B { }\n"}
+        )
+        model = Scripted("SEARCH input", "STRUCTURE Input.cs", "ANSWER gave up")
+        answer = ask(model, scan_result, analysis, "q")
+        refusal = answer.steps[1]
+        assert refusal.refused
+        assert "client/Input.cs" in refusal.observation
+        assert "server/Input.cs" in refusal.observation
+
+    def test_windows_separators_and_any_case_resolve(self, project):
+        scan_result, analysis = project(UNITY)
+        model = Scripted(
+            "SEARCH PlayerMovment",
+            "STRUCTURE assets\\scripts\\playermovment.cs",
+            "ANSWER done",
+        )
+        answer = ask(model, scan_result, analysis, "q")
+        assert not answer.steps[1].refused
+        assert answer.steps[1].argument == "Assets/Scripts/PlayerMovment.cs"
+
+    def test_a_path_with_a_space_can_be_read(self, project):
+        """SOURCE split its argument at the first space, and Unity folders on
+        Windows often have one."""
+        scan_result, analysis = project(
+            {"Assets/My Scripts/Jump.cs": "public class Jump\n{\n    void Leap() { }\n}\n"}
+        )
+        model = Scripted(
+            "SEARCH jump",
+            "STRUCTURE Assets/My Scripts/Jump.cs",
+            "SOURCE Assets/My Scripts/Jump.cs Jump.Leap()",
+            "ANSWER Jump.Leap at line 3.",
+        )
+        answer = ask(model, scan_result, analysis, "q")
+        assert [s.refused for s in answer.steps] == [False, False, False, False]
+        assert answer.files_read == ["Assets/My Scripts/Jump.cs"]

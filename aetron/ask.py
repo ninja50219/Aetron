@@ -177,7 +177,7 @@ class Answer:
         """Files whose source actually left the project. The real cost."""
         return sorted(
             {
-                step.argument.split()[0]
+                step.argument.rsplit(None, 1)[0]
                 for step in self.steps
                 if step.command == "SOURCE" and not step.refused and step.argument
             }
@@ -229,14 +229,54 @@ class _Session:
         # (file, definition) the model actually read the code of, in order.
         self.sourced: list[tuple[str, str]] = []
 
-    def run(self, command: str, argument: str) -> tuple[str, bool]:
+    def run(self, command: str, argument: str) -> tuple[str, bool, str]:
+        """The command's result, whether it was refused, and its argument as
+        Aetron understood it.
+
+        The argument comes back because a file named loosely is recorded under
+        the path that was actually read, so the trail, the cost and the
+        citation all name the real file.
+        """
         if command == "SEARCH":
-            return self._search(argument), False
+            return self._search(argument), False, argument
         if command == "STRUCTURE":
             return self._structure(argument)
         if command == "SOURCE":
             return self._source(argument)
-        return f"{command} is not a command.", True
+        return f"{command} is not a command.", True, argument
+
+    def _resolve(self, written: str, allowed: set[str]) -> tuple[str, str]:
+        """The file a model meant among the files it may ask about.
+
+        Returns (path, "") when ``written`` names exactly one of them, and
+        ("", why) when it names several. ("", "") means it names none.
+
+        Found on the first real model to run the protocol. The search result
+        said ``Assets/Scripts/PlayerMovment.cs``, the model wrote
+        ``STRUCTURE PlayerMovment.cs``, and the refusal told it the file had
+        not come up in a search - which was false, so it searched again, and
+        did the same thing until it ran out of requests. Small models shorten
+        paths; that is not a reason to refuse what the search just offered.
+        Only files already allowed are considered, so the rule the refusal
+        enforced - nothing is read that no search put forward - still holds.
+        """
+        name = written.strip().strip("`'\"").replace("\\", "/")
+        while name.startswith("./"):
+            name = name[2:]
+        if name in allowed:
+            return name, ""
+
+        lowered = name.lower()
+        matches = sorted(
+            path for path in allowed
+            if path.lower() == lowered or path.lower().endswith("/" + lowered)
+        )
+        if len(matches) == 1:
+            return matches[0], ""
+        if matches:
+            listed = ", ".join(matches[:5])
+            return "", f"{written} could be any of: {listed}. Use the full path."
+        return "", ""
 
     def _search(self, query: str) -> str:
         if not query:
@@ -259,49 +299,65 @@ class _Session:
             )
         return "\n".join(lines)
 
-    def _structure(self, rel_path: str) -> tuple[str, bool]:
-        rel_path = rel_path.strip()
-        if not rel_path:
-            return "STRUCTURE needs a file.", True
+    def _structure(self, written: str) -> tuple[str, bool, str]:
+        written = written.strip()
+        if not written:
+            return "STRUCTURE needs a file.", True, written
 
-        if rel_path not in self.found:
+        rel_path, ambiguous = self._resolve(written, self.found)
+        if ambiguous:
+            return ambiguous, True, written
+        if not rel_path:
             # Enforced, not requested: a model that guessed a path would be
             # reading files it never had a reason to believe were relevant.
             return (
-                f"{rel_path} has not come up in a search. SEARCH for it first.",
+                f"{written} has not come up in a search. SEARCH for a word in "
+                "its name, then use the path exactly as the results give it.",
                 True,
+                written,
             )
 
         self.examined.add(rel_path)
         outline = build_structure(self.scan_result, self.analysis, rel_path)
         self.outlines[rel_path] = outline
-        return render(outline), False
+        return render(outline), False, rel_path
 
-    def _source(self, argument: str) -> tuple[str, bool]:
-        parts = argument.split(None, 1)
+    def _source(self, argument: str) -> tuple[str, bool, str]:
+        # Split at the last space, not the first. A definition's name never
+        # contains one and a path may - "Assets/My Scripts/Player.cs" is an
+        # ordinary Unity path on Windows.
+        parts = argument.rsplit(None, 1)
         if len(parts) < 2:
-            return "SOURCE needs a file and the name of a definition in it.", True
+            return "SOURCE needs a file and the name of a definition in it.", True, argument
 
-        rel_path, name = parts[0], parts[1].strip()
+        written, name = parts[0], parts[1].strip("`'\"")
+        # "Update()" is how a model writes a method it means by name.
+        if name.endswith("()"):
+            name = name[:-2]
 
-        if rel_path not in self.examined:
+        rel_path, ambiguous = self._resolve(written, self.examined)
+        if ambiguous:
+            return ambiguous, True, argument
+        if not rel_path:
+            target = self._resolve(written, self.found)[0] or written
             return (
-                f"You have not read the structure of {rel_path}. "
-                f"STRUCTURE {rel_path} first, so you know what to ask for.",
+                f"You have not read the structure of {target}. "
+                f"STRUCTURE {target} first, so you know what to ask for.",
                 True,
+                argument,
             )
 
         result = get_source(self.scan_result, self.analysis, rel_path, name)
 
         if not result.text:
-            return f"{result.problem}", True
+            return f"{result.problem}", True, f"{rel_path} {name}"
 
         self.sourced.append((rel_path, name))
 
         body = result.numbered()
         if result.problem:
             body = f"({result.problem})\n{body}"
-        return f"{result.location}\n{body}", False
+        return f"{result.location}\n{body}", False, f"{rel_path} {name}"
 
 
 def ask(
@@ -385,7 +441,7 @@ def ask(
                 on_step(step)
             return answer
 
-        observation, refused = session.run(command, argument)
+        observation, refused, argument = session.run(command, argument)
         # The one door between the project and the model, so the one place a
         # key in someone's source is stopped. The page and the citation still
         # show the real code: they stay on this machine, and a hosted model

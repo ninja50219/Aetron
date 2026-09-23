@@ -384,7 +384,11 @@ function renderTrail(steps, running) {
   $('trail').replaceChildren();
   for (const step of steps) {
     const row = node('div', '', 'trail-step' + (step.refused ? ' refused' : ''));
-    row.append(node('b', STEP_LABEL[step.command] || 'RETRY'), node('span', step.argument || step.note || '—'));
+    const text = node('span', step.argument || (step.refused ? '' : step.note) || '—');
+    // A refusal used to be only a colour. The first real model looped on one
+    // for twelve requests, and the page never said what it was being told.
+    if (step.refused && step.note) text.append(node('em', `Refused: ${step.note}`, 'trail-note'));
+    row.append(node('b', STEP_LABEL[step.command] || 'RETRY'), text);
     $('trail').append(row);
   }
   if (running) {
