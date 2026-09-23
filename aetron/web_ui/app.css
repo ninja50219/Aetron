@@ -18,10 +18,58 @@ dialog{color:var(--text);background:var(--surface);border:1px solid var(--line);
    inline styles, and an SVG presentation attribute is not a style at all. */
 .ask-tune{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:-11px 0 22px}.ask-tune label{font-size:11px;color:var(--muted)}.ask-tune select{padding:7px 9px;font-size:11px;max-width:150px}.ask-tune input{font-size:11px;padding:7px 9px;width:165px}.ask-tune .subtle{margin-left:4px}
 .error-notice{color:var(--error-text);background:var(--error);border:1px solid var(--line);border-radius:6px;margin-bottom:16px}
-.trail{display:grid;gap:5px;margin-bottom:18px}.trail-step{display:flex;gap:13px;align-items:baseline;border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:9px 13px;font:11px/1.65 Consolas,monospace}.trail-step b{font-family:inherit;font-size:9px;letter-spacing:.8px;color:var(--accent);min-width:66px;flex:none}.trail-step.refused b{color:var(--warning-text)}.trail-step.pending b{color:var(--muted)}.trail-step span{color:var(--muted);overflow-wrap:anywhere;min-width:0}
+.trail{display:grid;gap:5px;margin-bottom:18px}.trail-step{display:flex;gap:13px;align-items:baseline;border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:9px 13px;font:11px/1.65 Consolas,monospace}.trail-step b{font-family:inherit;font-size:9px;letter-spacing:.8px;color:var(--accent);min-width:66px;flex:none}.trail-step.refused b{color:var(--warning-text)}.trail-step.pending b{color:var(--muted)}.trail-step span{color:var(--muted);overflow-wrap:anywhere;min-width:0}.trail-note{display:block;font-style:normal;color:var(--warning-text)}
 .answer-card{border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden;margin-bottom:24px}.answer-head{min-height:49px;border-bottom:1px solid var(--line);padding:9px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .answer-body{display:flex;gap:26px;padding:22px 16px;align-items:flex-start}.score{flex:none;width:120px;text-align:center}.score-ring{position:relative;width:120px;height:120px;margin:0 auto}.score-ring svg{display:block;width:120px;height:120px}.ring-track{fill:none;stroke:var(--hover);stroke-width:9}.ring-value{fill:none;stroke:var(--accent);stroke-width:9;stroke-linecap:round}.ring-face{position:absolute;inset:0;display:grid;place-content:center}.ring-face strong{font-size:23px;font-weight:650;letter-spacing:-.8px;line-height:1.1}.ring-face small{font-size:8px;letter-spacing:1.1px;color:var(--muted)}.score p{font-size:10px;color:var(--muted);margin-top:11px;line-height:1.6}.score em{display:block;font-style:normal;color:var(--faint);margin-top:4px}
 .answer-main{min-width:0;flex:1}.answer-text{font-size:15px;line-height:1.65;overflow-wrap:anywhere;margin-bottom:15px}.answer-summary{font-size:11px;color:var(--muted);margin-top:11px;line-height:1.7}.cite{display:flex;flex-wrap:wrap;gap:7px;align-items:center}.chip{border:1px solid var(--line);border-radius:20px;padding:5px 11px;font:10px Consolas,monospace;color:var(--muted);background:var(--bg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}button.chip.open{color:var(--accent);background:var(--selected);border-color:color-mix(in srgb,var(--accent) 30%,transparent)}button.chip.open:hover{background:var(--hover)}
 .checks{border-top:1px solid var(--line);padding:14px 16px}.checks summary{cursor:pointer;color:var(--muted);font-size:11px}.checks ul{list-style:none;margin:13px 0 0;padding:0;display:grid;gap:8px}.checks li{display:flex;gap:11px;color:var(--muted);font-size:11px;line-height:1.65}.checks b{flex:none;font-weight:400}.checks .yes{color:#469678}.checks .no{color:var(--warning-text)}
 .answer-code{border-top:1px solid var(--line);background:var(--code)}.answer-code .source-code{min-height:0;max-height:420px}.ask-empty{text-align:center;padding:50px 25px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}.ask-empty h3{font-size:14px;font-weight:500;margin-bottom:8px}.ask-empty p{font-size:12px;color:var(--muted);line-height:1.9}
 @media(max-width:850px){.answer-body{flex-direction:column;gap:18px}.score{width:100%;display:flex;align-items:center;gap:16px;text-align:left}.score-ring{margin:0}.score p{margin-top:0}}
+/* The agent: summary, conversation, thinking ----------------------------- */
+.summary-card{border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:14px 16px;margin-bottom:16px}
+.summary-head{display:flex;align-items:center;gap:9px}.summary-head h2{font-size:13px;margin:0;flex:1}
+.summary-icon{color:var(--accent)}.summary-text{margin:9px 0 0;font-size:13px;line-height:1.6}
+.summary-text.placeholder{color:var(--muted)}.summary-text.stale::after{content:' (written for an earlier version of the project)';color:var(--muted);font-size:11px}
+.conversation{display:grid;gap:18px;margin-bottom:18px}
+.turn{display:grid;gap:10px;scroll-margin-bottom:190px}
+.turn-question{justify-self:end;max-width:78%;background:var(--selected);border-radius:12px 12px 3px 12px;padding:9px 13px;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.turn-agent{display:grid;gap:10px}
+.thinking{border:1px solid var(--line);border-radius:8px;background:var(--code)}
+.thinking>summary{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;font-size:12px;list-style:none}
+.thinking>summary::-webkit-details-marker{display:none}
+.thinking>summary::after{content:'▾';color:var(--muted);margin-left:auto}.thinking:not([open])>summary::after{content:'▸'}
+.thinking-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--selected);color:var(--accent);font-size:11px;flex:none}
+.turn.running .thinking-icon{animation:thinking-pulse 1.4s ease-in-out infinite}
+@keyframes thinking-pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(.82);opacity:.55}}
+.thinking-title{font-weight:600}.thinking-meta{color:var(--muted);font-size:11px}
+.thinking .trail{margin:0;padding:0 12px 12px;list-style:none}
+.step-thought{display:block;color:var(--text);font-style:italic;font-size:12px;line-height:1.55;margin-top:3px;white-space:pre-wrap}
+.step-thought::before{content:'💭 ';font-style:normal}
+.turn-cost{font-size:11px;color:var(--muted)}
+.composer{position:sticky;bottom:0;background:var(--bg);padding:12px 0 6px;border-top:1px solid var(--line);z-index:2}
+.ask-tune{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px;font-size:11px}
+.ask-tune label{color:var(--muted)}.ask-tune select,.ask-tune input:not([type=range]){min-width:0}
+#effort{width:110px;accent-color:var(--accent)}
+.effort-label{font-weight:600;min-width:62px}
+#newConversation{margin-left:auto}
+.ask-notes{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px}
+/* The explorer's file tree ------------------------------------------------ */
+.tree-filter{display:flex;gap:6px;align-items:center;padding:8px 10px 0}.tree-filter input{flex:1;min-width:0;font-size:11px}
+.tree-heading{font-size:10px;letter-spacing:.8px;color:var(--muted);margin:10px 6px 4px;text-transform:uppercase}
+.tree-folder>summary{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:4px;cursor:pointer;font-size:12px;list-style:none}
+.tree-folder>summary::-webkit-details-marker{display:none}
+.tree-folder>summary::before{content:'▸';color:var(--muted);width:10px}.tree-folder[open]>summary::before{content:'▾'}
+.tree-folder>summary:hover,.tree-file:hover{background:var(--hover)}
+.tree-children{padding-left:12px}
+.tree-count{margin-left:auto;color:var(--faint);font-size:10px}
+.tree-file{display:flex;align-items:center;gap:7px;width:100%;border:0;border-radius:4px;background:transparent;padding:5px 6px;text-align:left;font-size:12px}
+.tree-file.selected{background:var(--selected)}
+.tree-file .file-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-file .file-dir{color:var(--faint);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.lang-icon{font:9px/16px Consolas,monospace;min-width:22px;text-align:center;border-radius:3px;background:var(--hover);color:var(--muted);flex:none}
+.file-badge{font-size:9px;border-radius:8px;padding:0 6px;line-height:16px;background:var(--selected);color:var(--accent);flex:none;white-space:nowrap}
+.file-badge.star{background:transparent;color:#d8a106;padding:0}
+.file-badge.muted{background:var(--hover);color:var(--muted)}
+.tree-file .spacer{flex:1}
+@media(max-width:600px){.turn-question{max-width:92%}.ask-tune{gap:6px}#effort{width:90px}#newConversation{margin-left:0}}
+@media(prefers-reduced-motion:reduce){.turn.running .thinking-icon{animation:none}}

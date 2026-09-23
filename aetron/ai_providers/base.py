@@ -14,6 +14,7 @@ So the retrieval protocol is carried in text the model writes, and every
 provider below this file only has to return a string.
 """
 
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -25,6 +26,38 @@ class ProviderError(RuntimeError):
     and what to do about it. A stack trace from inside an HTTP client tells the
     user nothing they can act on.
     """
+
+
+def key_from_environment(variable: str, provider: str) -> str:
+    """An API key, read from the environment and from nowhere else.
+
+    Not from a file in the project, not from a config Aetron writes, not from
+    the page. A key that lives in the working tree is one ``git add .`` away
+    from a public repository, and Aetron is a tool people point at their
+    working trees. The environment is the one place that is never committed.
+    """
+    key = os.environ.get(variable, "").strip()
+    if not key:
+        raise ProviderError(
+            f"{provider} needs an API key, and {variable} is not set. "
+            f"Set it in your shell before starting Aetron - "
+            f"Windows: setx {variable} \"your-key\" (then open a new window); "
+            f"macOS or Linux: export {variable}=\"your-key\". "
+            "Never put the key in a file inside your project."
+        )
+    return key
+
+
+def redact(text: str, secret: str) -> str:
+    """``text`` with ``secret`` removed, for error messages that echo a request.
+
+    Some APIs quote the key they rejected back in the error body, and an error
+    is shown on screen, pasted into issues and written to logs. Short secrets
+    are left alone rather than blanking every common substring they share.
+    """
+    if secret and len(secret) >= 8:
+        text = text.replace(secret, "[key hidden]")
+    return text
 
 
 @dataclass

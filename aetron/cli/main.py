@@ -34,7 +34,7 @@ from aetron.context.search import DEFAULT_LIMIT, search
 from aetron.context.source import get_source
 from aetron.context.structure import build_structure, render
 from aetron.context.summary import build_summary
-from aetron.ask import MAX_STEPS, Step, ask
+from aetron.ask import DEFAULT_EFFORT, EFFORTS, MAX_STEPS, Step, ask
 from aetron.scanner import ScanResult, scan
 from aetron.scanner.gitignore import AVAILABLE as gitignore_available
 from aetron.scanner.paths import InvalidPathError, normalize_path
@@ -273,10 +273,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ask_command.add_argument("--model", help="model name, if not the provider's default")
     ask_command.add_argument(
+        "--effort",
+        choices=list(EFFORTS),
+        default=DEFAULT_EFFORT,
+        help="how much the question may cost: low is fastest and cheapest, "
+        f"high reads most (default: {DEFAULT_EFFORT})",
+    )
+    ask_command.add_argument(
         "--max-steps",
         type=int,
-        default=MAX_STEPS,
-        help="how many requests the model may make before it has to answer",
+        default=None,
+        help="how many requests the model may make, overriding the effort's budget",
     )
     ask_command.add_argument(
         "--quiet", action="store_true", help="the answer only, without the working"
@@ -465,6 +472,8 @@ def print_step(step: Step) -> None:
     if step.command == "ANSWER":
         return
 
+    if step.thought:
+        print(f"  ~   {step.thought[:200]}")
     marker = "  x  " if step.refused else "  ->  "
     print(f"{marker}{step.command} {step.argument}".rstrip())
 
@@ -475,7 +484,7 @@ def print_step(step: Step) -> None:
 def command_ask(args, root: Path) -> None:
     """Levels 1 to 3, driven by a model rather than by hand."""
     try:
-        provider = get_provider(args.provider, args.model)
+        provider = get_provider(args.provider, args.model, effort=args.effort)
     except ProviderError as exc:
         print(f"{exc}")
         sys.exit(1)
@@ -492,6 +501,7 @@ def command_ask(args, root: Path) -> None:
         analysis,
         args.question,
         max_steps=args.max_steps,
+        effort=args.effort,
         on_step=None if args.quiet else print_step,
     )
 
@@ -524,7 +534,11 @@ def command_ask(args, root: Path) -> None:
         # this stays short, so it is reported rather than left to be assumed.
         requests = len([s for s in answer.steps if s.command and s.command != "ANSWER"])
         read = ", ".join(answer.files_read) or "no source code"
-        print(f"\n({requests} requests; source read from: {read})")
+        about = "~" if answer.tokens_estimated else ""
+        print(
+            f"\n({requests} requests, {about}{answer.tokens_in + answer.tokens_out} tokens "
+            f"at {answer.effort} effort; source read from: {read})"
+        )
 
 
 def command_explain(args, root: Path) -> None:

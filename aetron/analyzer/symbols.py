@@ -78,6 +78,12 @@ class FileSymbols:
     dynamic_prefixes: set[str] = field(default_factory=set)
     # Set when the file could not be parsed; symbols and imports stay empty.
     parse_error: str | None = None
+    # True when the file is written to be run directly - a Python file with an
+    # ``if __name__ == "__main__":`` block. "What starts the program?" is the
+    # first question anyone asks of an unfamiliar project, and the import
+    # graph cannot answer it: a script is imported by nothing, and neither is
+    # every other file in a folder of scripts.
+    runs_as_script: bool = False
 
     def of_kind(self, kind: SymbolKind) -> list[Symbol]:
         return [s for s in self.symbols if s.kind == kind]

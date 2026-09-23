@@ -33,15 +33,76 @@ from aetron.ai_providers import Message, Provider, ProviderError
 from aetron.analyzer.analyzer import AnalysisResult
 from aetron.context.search import search
 from aetron.context.source import get_source
+from aetron.context.overview import build_overview, estimate_tokens, list_folder, list_skipped
 from aetron.context.structure import FileStructure, build_structure, render
+from aetron.credentials import hide_credentials
 from aetron.scanner.scanner import ScanResult
 
-# How many commands a model may issue before it has to answer. Reached in
-# practice only when a model is lost, and a lost model that is not stopped
-# will search forever.
+# How many commands a model may issue before it has to answer, when a caller
+# asks for a number rather than an effort. Reached in practice only when a
+# model is lost, and a lost model that is not stopped will search forever.
 MAX_STEPS = 12
 
+
+@dataclass(frozen=True)
+class Effort:
+    """How much a question may cost, chosen by the person asking.
+
+    Effort is spent in tokens, so every knob here is one: how many requests
+    the model may make, how large a map it starts from, whether it writes a
+    reason before each command (readable, and a few tokens a turn), and how
+    many recent results stay in full once the conversation has to shrink.
+    """
+
+    name: str
+    label: str
+    max_steps: int
+    map_budget: int
+    reasons: bool
+    keep_full: int
+    # Past this many characters of conversation, older results are replaced
+    # by a line saying what they were. Well above what a short question
+    # reaches, so an ordinary answer keeps its whole history cacheable.
+    conversation_budget: int
+
+
+EFFORTS = {
+    "low": Effort("low", "Fast", 6, 800, False, 2, 12_000),
+    "medium": Effort("medium", "Balanced", 10, 1500, True, 3, 24_000),
+    "high": Effort("high", "Thorough", 16, 3000, True, 4, 48_000),
+}
+DEFAULT_EFFORT = "medium"
+
+# How many refusals in a row mean a model is lost rather than learning. Measured
+# on the first real model's trail replayed against the map: with every repeat
+# refused, a model that ignored the refusals still spent its whole budget - ten
+# requests, seven thousand tokens - asking the same thing. Three in a row is
+# past the point where one more refusal would teach it anything.
+STUCK_AFTER = 3
+
+# How a finished question is carried into the next one: the question and the
+# start of its answer, never the steps. A follow-up needs to know what was
+# said, not what was read to say it.
+HISTORY_TURNS = 3
+HISTORY_ANSWER_CHARS = 400
+
+# "Begin with 'This project seems to be'" was the first wording, and the first
+# real model to write a summary did exactly that - as plain text, with no
+# ANSWER in front, because the question's instruction was more specific than
+# the rules'. The format now lives in the question too.
+SUMMARY_QUESTION = (
+    "In two or three sentences, what is this project? Say what it is for, what "
+    "it is built with, and where it starts. Read a file only if the map leaves "
+    "you unsure. Reply as: ANSWER This project seems to be ..."
+)
+
 SEARCH_LIMIT = 8
+
+# How much of a reply that was not a command goes back into the conversation.
+# The model is shown what it said so it can see why it was refused, but a
+# looping local model sends a thousand tokens of nothing per turn, and echoing
+# all of it crowded an 8192-token context within six turns on a real Ollama.
+ECHO_LIMIT = 300
 
 # What a citation's confidence is made of, out of 100. Each is a check that
 # either happened or did not - never a model's opinion of itself, because a
@@ -62,37 +123,76 @@ CONFIDENCE_WEIGHTS = {
 }
 
 SYSTEM_PROMPT = """\
-You answer questions about a codebase you cannot see. You have no file access.
-Instead you ask Aetron for information, one request at a time, and it replies.
+You answer questions about a codebase you cannot see. Aetron has indexed it
+and shows you a map below: file names and the names of what they define. You
+see code only when you ask for it, one request at a time.
 
-Reply with exactly one command and nothing else. No explanation, no markdown,
-no code fences.
+Each turn, reply with one command:
 
-  SEARCH <words>            Find files related to some words. Start here.
-  STRUCTURE <file>          List one file's definitions and their line numbers.
-  SOURCE <file> <name>      Show the code of one definition.
-  ANSWER <text>             Give the final answer. Only when you are sure.
+  STRUCTURE <file>        One file's definitions and their line numbers.
+  SOURCE <file> <name>    The code of one definition. The expensive step.
+  SEARCH <words>          Find files by words, when the map is not enough.
+  FILES <folder>          List a folder the map left out.
+  SKIPPED                 List files the index left out, and why.
+  ANSWER <text>           Your final answer.
 
-Rules:
+How to work:
 
-- Start with SEARCH. You cannot ask for a file you have not found.
-- STRUCTURE a file before SOURCE from it. The structure tells you which
-  definition you want and whether the file is the right one at all.
-- Ask for SOURCE only when the structure suggests the answer is in that exact
-  definition. Reading code is the expensive step and usually unnecessary.
-- If a search result looks wrong, search again with different words rather
-  than reading files hoping to get lucky.
-- Your answer must name a file and a line number, so the person asking can
-  open it. For example: "Login is handled in LoginController.cs, LoginHandler
-  at line 68."
-- If the project does not appear to contain what was asked about, ANSWER
-  saying so. A wrong answer is worse than no answer.
+- Start from the map. If it already answers the question, ANSWER at once.
+- Read as little as you can. When you are about 75% sure, ANSWER. Ask for
+  SOURCE only when an outline does not settle it.
+- Use file paths exactly as the map or a result writes them.
+- Never repeat a request: its result is already above.
+- Name a file and a line when there is one, so the person asking can open
+  it: "Login is handled in LoginController.cs, LoginHandler at line 68."
+- If the project does not contain what was asked about, say so. A wrong
+  answer is worse than no answer.
+
+Example replies, one per turn:
+
+  STRUCTURE src/player/Movement.cs
+  SOURCE src/player/Movement.cs Movement.Update
+  ANSWER Movement is handled in src/player/Movement.cs, Movement.Update at line 12.
 """
 
+# Appended by effort. A reason costs a few tokens a turn and is what lets the
+# person asking read the model's thinking when the model has no thinking of
+# its own to show; at the lowest effort it is not worth the tokens.
+REASON_RULE = (
+    "- Before the command, write one line starting with THINK: saying why, in\n"
+    "  under fifteen words.\n"
+)
+BARE_RULE = "- Reply with the command only. No explanation, no markdown, no code fences.\n"
+
 _COMMAND_RE = re.compile(
-    r"^\s*(SEARCH|STRUCTURE|SOURCE|ANSWER)\b[:\s]*(.*)$",
+    r"^\s*(SEARCH|STRUCTURE|OUTLINE|SOURCE|FILES|SKIPPED|ANSWER)\b[:\s]*(.*)$",
     re.IGNORECASE | re.DOTALL,
 )
+
+# A command the page calls by a friendlier name, and a model may copy back.
+_ALIASES = {"OUTLINE": "STRUCTURE"}
+
+_COMMANDS = "SEARCH, STRUCTURE, SOURCE, FILES, SKIPPED or ANSWER"
+
+# How a reply that is a plan rather than an answer begins. Prose is taken as an
+# answer when a model insists on it; a plan never is.
+_PLAN_RE = re.compile(
+    r"^(let me|let's|i will|i'll|i need|i should|i must|i am going|i'm going|"
+    r"first|next|to answer|we need|we should|now i)\b",
+    re.IGNORECASE,
+)
+
+
+def _prose(reply: str) -> str:
+    """A reply's text as an answer: fences and a THINK: label removed."""
+    text = re.sub(r"^```[\w]*\n?|```$", "", reply.strip(), flags=re.MULTILINE).strip()
+    text = re.sub(r"^(THINK|THOUGHT|REASON)\s*:\s*", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _answer_shaped(text: str) -> bool:
+    """Whether prose could be a final answer rather than a plan or a fragment."""
+    return len(text.split()) >= 6 and not _PLAN_RE.match(text)
 
 
 @dataclass
@@ -104,6 +204,9 @@ class Step:
     observation: str
     # True when the command was refused rather than run.
     refused: bool = False
+    # What the model said it was thinking: its own reasoning when the model
+    # has some to show, otherwise the one-line reason it was asked for.
+    thought: str = ""
 
 
 @dataclass
@@ -164,13 +267,20 @@ class Answer:
     # a real outcome - an answer saying the project has no such thing has
     # nothing to cite, and neither does one that named a file out of thin air.
     citation: "Citation | None" = None
+    # What the question cost. Estimated from characters when the provider
+    # does not report its own counts; either way, the number the whole
+    # design exists to keep small, so it is measured rather than assumed.
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_estimated: bool = True
+    effort: str = DEFAULT_EFFORT
 
     @property
     def files_read(self) -> list[str]:
         """Files whose source actually left the project. The real cost."""
         return sorted(
             {
-                step.argument.split()[0]
+                step.argument.rsplit(None, 1)[0]
                 for step in self.steps
                 if step.command == "SOURCE" and not step.refused and step.argument
             }
@@ -192,6 +302,7 @@ def parse_command(reply: str) -> tuple[str, str]:
         match = _COMMAND_RE.match(line)
         if match:
             command = match.group(1).upper()
+            command = _ALIASES.get(command, command)
             argument = match.group(2).strip().strip("`").strip()
             if command == "ANSWER":
                 # An answer may legitimately run to several lines, so it takes
@@ -203,14 +314,42 @@ def parse_command(reply: str) -> tuple[str, str]:
     return "", ""
 
 
+def split_thought(reply: str) -> str:
+    """The reason a model wrote before its command, without the command.
+
+    Asked for as one line starting with THINK:, and taken from any prose
+    before the command when a model wrote its reasoning without the label.
+    """
+    cleaned = re.sub(r"^```[\w]*\n?|```$", "", reply.strip(), flags=re.MULTILINE)
+    before = []
+    for line in cleaned.split("\n"):
+        if _COMMAND_RE.match(line):
+            break
+        before.append(line.strip())
+    thought = " ".join(part for part in before if part)
+    thought = re.sub(r"^(THINK|THOUGHT|REASON)\s*:\s*", "", thought, flags=re.IGNORECASE)
+    return thought[:300]
+
+
 class _Session:
     """One question, and what the model has been allowed to see so far."""
 
-    def __init__(self, scan_result: ScanResult, analysis: AnalysisResult) -> None:
+    def __init__(
+        self,
+        scan_result: ScanResult,
+        analysis: AnalysisResult,
+        shown: set[str] | None = None,
+        map_budget: int = 1500,
+    ) -> None:
         self.scan_result = scan_result
         self.analysis = analysis
-        # Files the model has found by search, and so may ask the shape of.
-        self.found: set[str] = set()
+        self.map_budget = map_budget
+        # Files the model has been shown - by the map, a search or a folder
+        # listing - and so may ask the shape of.
+        self.found: set[str] = set(shown or ())
+        # The files the map named. A file the map led the model to has been
+        # put forward exactly as a search result has, and counts as such.
+        self.mapped: set[str] = set(shown or ())
         # Files whose shape it has read, and so may ask the source of.
         self.examined: set[str] = set()
         # The best search percentage each file has been ranked at. Kept because
@@ -222,14 +361,63 @@ class _Session:
         # (file, definition) the model actually read the code of, in order.
         self.sourced: list[tuple[str, str]] = []
 
-    def run(self, command: str, argument: str) -> tuple[str, bool]:
+    def run(self, command: str, argument: str) -> tuple[str, bool, str]:
+        """The command's result, whether it was refused, and its argument as
+        Aetron understood it.
+
+        The argument comes back because a file named loosely is recorded under
+        the path that was actually read, so the trail, the cost and the
+        citation all name the real file.
+        """
         if command == "SEARCH":
-            return self._search(argument), False
+            return self._search(argument), False, argument
         if command == "STRUCTURE":
             return self._structure(argument)
         if command == "SOURCE":
             return self._source(argument)
-        return f"{command} is not a command.", True
+        if command == "FILES":
+            return self._files(argument), False, argument
+        if command == "SKIPPED":
+            return list_skipped(self.scan_result, self.analysis), False, ""
+        return f"{command} is not a command.", True, argument
+
+    def _files(self, folder: str) -> str:
+        listing = list_folder(self.scan_result, self.analysis, folder, self.map_budget)
+        self.found |= listing.shown
+        return listing.text
+
+    def _resolve(self, written: str, allowed: set[str]) -> tuple[str, str]:
+        """The file a model meant among the files it may ask about.
+
+        Returns (path, "") when ``written`` names exactly one of them, and
+        ("", why) when it names several. ("", "") means it names none.
+
+        Found on the first real model to run the protocol. The search result
+        said ``Assets/Scripts/PlayerMovment.cs``, the model wrote
+        ``STRUCTURE PlayerMovment.cs``, and the refusal told it the file had
+        not come up in a search - which was false, so it searched again, and
+        did the same thing until it ran out of requests. Small models shorten
+        paths; that is not a reason to refuse what the search just offered.
+        Only files already allowed are considered, so the rule the refusal
+        enforced - nothing is read that no search put forward - still holds.
+        """
+        name = written.strip().strip("`'\"").replace("\\", "/")
+        while name.startswith("./"):
+            name = name[2:]
+        if name in allowed:
+            return name, ""
+
+        lowered = name.lower()
+        matches = sorted(
+            path for path in allowed
+            if path.lower() == lowered or path.lower().endswith("/" + lowered)
+        )
+        if len(matches) == 1:
+            return matches[0], ""
+        if matches:
+            listed = ", ".join(matches[:5])
+            return "", f"{written} could be any of: {listed}. Use the full path."
+        return "", ""
 
     def _search(self, query: str) -> str:
         if not query:
@@ -252,49 +440,65 @@ class _Session:
             )
         return "\n".join(lines)
 
-    def _structure(self, rel_path: str) -> tuple[str, bool]:
-        rel_path = rel_path.strip()
-        if not rel_path:
-            return "STRUCTURE needs a file.", True
+    def _structure(self, written: str) -> tuple[str, bool, str]:
+        written = written.strip()
+        if not written:
+            return "STRUCTURE needs a file.", True, written
 
-        if rel_path not in self.found:
+        rel_path, ambiguous = self._resolve(written, self.found)
+        if ambiguous:
+            return ambiguous, True, written
+        if not rel_path:
             # Enforced, not requested: a model that guessed a path would be
             # reading files it never had a reason to believe were relevant.
             return (
-                f"{rel_path} has not come up in a search. SEARCH for it first.",
+                f"{written} has not come up in the map or a search. SEARCH for a "
+                "word in its name, then use the path exactly as the results give it.",
                 True,
+                written,
             )
 
         self.examined.add(rel_path)
         outline = build_structure(self.scan_result, self.analysis, rel_path)
         self.outlines[rel_path] = outline
-        return render(outline), False
+        return render(outline), False, rel_path
 
-    def _source(self, argument: str) -> tuple[str, bool]:
-        parts = argument.split(None, 1)
+    def _source(self, argument: str) -> tuple[str, bool, str]:
+        # Split at the last space, not the first. A definition's name never
+        # contains one and a path may - "Assets/My Scripts/Player.cs" is an
+        # ordinary Unity path on Windows.
+        parts = argument.rsplit(None, 1)
         if len(parts) < 2:
-            return "SOURCE needs a file and the name of a definition in it.", True
+            return "SOURCE needs a file and the name of a definition in it.", True, argument
 
-        rel_path, name = parts[0], parts[1].strip()
+        written, name = parts[0], parts[1].strip("`'\"")
+        # "Update()" is how a model writes a method it means by name.
+        if name.endswith("()"):
+            name = name[:-2]
 
-        if rel_path not in self.examined:
+        rel_path, ambiguous = self._resolve(written, self.examined)
+        if ambiguous:
+            return ambiguous, True, argument
+        if not rel_path:
+            target = self._resolve(written, self.found)[0] or written
             return (
-                f"You have not read the structure of {rel_path}. "
-                f"STRUCTURE {rel_path} first, so you know what to ask for.",
+                f"You have not read the structure of {target}. "
+                f"STRUCTURE {target} first, so you know what to ask for.",
                 True,
+                argument,
             )
 
         result = get_source(self.scan_result, self.analysis, rel_path, name)
 
         if not result.text:
-            return f"{result.problem}", True
+            return f"{result.problem}", True, f"{rel_path} {name}"
 
         self.sourced.append((rel_path, name))
 
         body = result.numbered()
         if result.problem:
             body = f"({result.problem})\n{body}"
-        return f"{result.location}\n{body}", False
+        return f"{result.location}\n{body}", False, f"{rel_path} {name}"
 
 
 def ask(
@@ -302,46 +506,112 @@ def ask(
     scan_result: ScanResult,
     analysis: AnalysisResult,
     question: str,
-    max_steps: int = MAX_STEPS,
+    max_steps: int | None = None,
     on_step=None,
+    effort: str = DEFAULT_EFFORT,
+    history: list[tuple[str, str]] | None = None,
+    notes: str = "",
 ) -> Answer:
     """Answer a question about a project, using a model and the three levels.
 
     ``on_step`` is called with each Step as it happens, so a caller can show
     the work. Nothing is printed here.
 
+    ``effort`` names an entry in EFFORTS; ``max_steps``, when given, overrides
+    its request budget. ``history`` is earlier (question, answer) pairs from
+    the same conversation, and ``notes`` an earlier summary of the project -
+    both are carried as text, a few hundred characters, never as the steps
+    that produced them.
+
     The returned Answer carries a citation when the model's own steps support
     one, so a caller has somewhere to send the reader rather than a paragraph
     to paraphrase.
     """
-    answer = Answer(question=question)
-    session = _Session(scan_result, analysis)
+    level = EFFORTS.get(effort, EFFORTS[DEFAULT_EFFORT])
+    steps_allowed = max_steps if max_steps is not None else level.max_steps
+    answer = Answer(question=question, effort=level.name)
 
-    project = _describe(scan_result, analysis)
-    messages = [Message(role="user", content=f"{project}\n\nQuestion: {question}")]
+    overview = build_overview(scan_result, analysis, budget=level.map_budget, notes=notes)
+    session = _Session(scan_result, analysis, overview.shown, level.map_budget)
 
-    for _ in range(max_steps):
+    # The instructions and the map come first and never change during a
+    # question, or between questions about the same project: that is the
+    # prefix a provider's cache can reuse, which on Ollama means the map is
+    # read once rather than once per request. What changes goes last.
+    #
+    # The question is restated at the very end. Ollama, given more
+    # conversation than its context holds, silently removes the oldest
+    # messages and keeps the system prompt - and the oldest message holds the
+    # question, so the model went on searching for nothing it could still see.
+    rules = REASON_RULE if level.reasons else BARE_RULE
+    system = (
+        f"{SYSTEM_PROMPT}{rules}\nThe project:\n{overview.text}\n\n"
+        f"The question you are answering: {question}\n"
+    )
+    messages = [Message(role="user", content=_opening(question, history))]
+    # Where each result sits in ``messages``, so old ones can be shortened.
+    observed: list[int] = []
+    shortened: set[int] = set()
+    # Each request already run, and the step that ran it.
+    asked: dict[tuple[str, str], int] = {}
+    reported = {"in": 0, "out": 0, "real": False}
+
+    last_prose = ""
+
+    def record(step: Step) -> None:
+        answer.steps.append(step)
+        if on_step:
+            on_step(step)
+
+    for used in range(steps_allowed):
+        _shrink(messages, observed, shortened, level)
         try:
-            reply = provider.complete(SYSTEM_PROMPT, messages)
+            reply = provider.complete(system, messages)
         except ProviderError as exc:
             answer.incomplete = str(exc)
+            _account(answer, reported)
             return answer
+        _count(provider, system, messages, reply, reported)
 
+        thought = (getattr(provider, "last_thinking", "") or "").strip() or split_thought(reply)
         command, argument = parse_command(reply)
+        remaining = steps_allowed - used - 1
 
         if not command:
-            step = Step(
-                command="",
-                argument="",
-                observation="Reply with one command: SEARCH, STRUCTURE, SOURCE or ANSWER.",
-                refused=True,
-            )
-            answer.steps.append(step)
-            if on_step:
-                on_step(step)
-            messages.append(Message(role="assistant", content=reply))
-            messages.append(Message(role="user", content=step.observation))
-            continue
+            text = _prose(reply)
+            # Found on the first real model to write a summary: it replied
+            # with the summary itself, plain, then with a bare ANSWER meaning
+            # "that". Prose is taken as the answer when prose was asked for,
+            # or when the model sends it a second time running; once, it is
+            # refused with the exact line that would have worked.
+            insisted = bool(answer.steps) and answer.steps[-1].command == "" and answer.steps[-1].refused
+            if _answer_shaped(text) and (question == SUMMARY_QUESTION or insisted):
+                command, argument = "ANSWER", text
+                last_prose = ""
+                # The reply was the answer, not a reason for one.
+                thought = (getattr(provider, "last_thinking", "") or "").strip()
+            else:
+                last_prose = text if _answer_shaped(text) else ""
+                opening = " ".join(text.split()[:8])
+                hint = f" If that was your answer, send it as: ANSWER {opening} ..." if last_prose else ""
+                step = Step(
+                    command="",
+                    argument="",
+                    observation=f"Reply with one command: {_COMMANDS}.{hint}",
+                    refused=True,
+                    thought=thought,
+                )
+                record(step)
+                messages.append(Message(role="assistant", content=_shortened(reply)))
+                messages.append(Message(role="user", content=_with_budget(step.observation, remaining)))
+                if _stuck(answer, reported):
+                    return answer
+                continue
+
+        if command == "ANSWER" and not argument.strip() and last_prose:
+            # "ANSWER" alone, straight after an answer written without it: the
+            # model is pointing at what it just said.
+            argument = last_prose
 
         if command == "ANSWER" and not argument.strip():
             # A bare ANSWER would end the loop with nothing to show and no
@@ -349,14 +619,15 @@ def ask(
             step = Step(
                 command="ANSWER",
                 argument="",
-                observation="ANSWER needs the answer after it.",
+                observation="ANSWER needs the answer after it, on the same line.",
                 refused=True,
+                thought=thought,
             )
-            answer.steps.append(step)
-            if on_step:
-                on_step(step)
+            record(step)
             messages.append(Message(role="assistant", content="ANSWER"))
             messages.append(Message(role="user", content=step.observation))
+            if _stuck(answer, reported):
+                return answer
             continue
 
         if command == "ANSWER":
@@ -364,57 +635,186 @@ def ask(
             answer.citation = _resolve_citation(
                 session, scan_result, analysis, argument
             )
-            step = Step(command=command, argument="", observation=argument)
-            answer.steps.append(step)
-            if on_step:
-                on_step(step)
+            record(Step(command=command, argument="", observation=argument, thought=thought))
+            _account(answer, reported)
             return answer
 
-        observation, refused = session.run(command, argument)
-        step = Step(
-            command=command, argument=argument, observation=observation, refused=refused
-        )
-        answer.steps.append(step)
-        if on_step:
-            on_step(step)
+        key = (command, " ".join(argument.lower().split()))
+        earlier = asked.get(key)
+        if earlier is not None and observed and earlier_result_visible(earlier, answer, observed, shortened):
+            # Found on the first real model to run the protocol: SEARCH main,
+            # eleven times, each run again and each answered the same way. A
+            # repeat is refused with a pointer to the result it already has.
+            observation = (
+                f"You already asked for this (request {earlier + 1}); its result is "
+                "above. Use it: STRUCTURE a file it named, or ANSWER."
+            )
+            refused = True
+        else:
+            observation, refused, argument = session.run(command, argument)
+            # The one door between the project and the model, so the one place
+            # a key in someone's source is stopped. The page and the citation
+            # still show the real code: they stay on this machine, and a hosted
+            # model does not.
+            observation, _ = hide_credentials(observation)
+            if not refused:
+                asked[key] = len(answer.steps)
+                asked[(command, " ".join(argument.lower().split()))] = len(answer.steps)
 
-        messages.append(Message(role="assistant", content=f"{command} {argument}"))
-        messages.append(Message(role="user", content=observation))
+        record(
+            Step(
+                command=command,
+                argument=argument,
+                observation=observation,
+                refused=refused,
+                thought=thought,
+            )
+        )
+        messages.append(Message(role="assistant", content=f"{command} {argument}".strip()))
+        messages.append(Message(role="user", content=_with_budget(observation, remaining)))
+        observed.append(len(messages) - 1)
+
+        if _stuck(answer, reported):
+            return answer
 
     answer.incomplete = (
-        f"The model did not reach an answer within {max_steps} requests."
+        f"The model did not reach an answer within {steps_allowed} requests."
     )
+    _account(answer, reported)
     return answer
 
 
-def _describe(scan_result: ScanResult, analysis: AnalysisResult) -> str:
-    """A few lines telling the model what it is looking at.
+def _stuck(answer: Answer, reported: dict) -> bool:
+    """End the question when the last few steps were all refused.
 
-    Deliberately small. Naming the languages and size stops a model guessing at
-    a Java project when it is looking at a Python one; listing the files would
-    be handing over the thing the whole protocol exists to avoid handing over.
+    Checked after every refusal, not only a refused command: the first real
+    summary alternated between a reply with no command and a bare ANSWER,
+    which the first version of this check never looked at, and ran to the
+    end of its budget.
     """
-    languages = {}
-    for file_info in scan_result.files:
-        languages[file_info.language] = languages.get(file_info.language, 0) + 1
-
-    summary = ", ".join(
-        f"{name} ({count})"
-        for name, count in sorted(languages.items(), key=lambda item: -item[1])[:5]
-    )
-
-    lines = [
-        f"Project: {Path(scan_result.root).name}",
-        f"{len(scan_result.files)} files, {scan_result.total_lines} lines: {summary}",
-    ]
-
-    if analysis.unparsed:
-        lines.append(
-            f"{len(analysis.unparsed)} files have no parser, so only their names "
-            "are searchable."
+    recent = answer.steps[-STUCK_AFTER:]
+    if len(recent) == STUCK_AFTER and all(step.refused for step in recent):
+        answer.incomplete = (
+            f"The model was refused {STUCK_AFTER} times in a row and was stopped "
+            "early rather than spend more tokens. A larger model, or a higher "
+            "effort, usually gets further."
         )
+        _account(answer, reported)
+        return True
+    return False
 
-    return "\n".join(lines)
+
+def summarize(
+    provider: Provider,
+    scan_result: ScanResult,
+    analysis: AnalysisResult,
+    effort: str = "low",
+    on_step=None,
+) -> Answer:
+    """A short account of what the project is, written from its map.
+
+    The same loop as any question, so the model may read a file when the map
+    leaves it unsure - and at low effort by default, because a summary is
+    asked for once per project and should cost as little as that deserves.
+    """
+    return ask(provider, scan_result, analysis, SUMMARY_QUESTION, effort=effort, on_step=on_step)
+
+
+def earlier_result_visible(
+    step_index: int, answer: Answer, observed: list[int], shortened: set[int]
+) -> bool:
+    """Whether the result of an earlier step is still in the conversation in
+    full. A shortened one may be asked for again - that is what the note that
+    replaced it tells the model to do."""
+    result_steps = [
+        i for i, step in enumerate(answer.steps)
+        if step.command not in ("", "ANSWER")
+    ]
+    if step_index not in result_steps:
+        return True
+    position = result_steps.index(step_index)
+    if position >= len(observed):
+        return True
+    return observed[position] not in shortened
+
+
+def _opening(question: str, history: list[tuple[str, str]] | None) -> str:
+    """The first message: earlier questions in brief, then this one."""
+    lines = []
+    for earlier_question, earlier_answer in (history or [])[-HISTORY_TURNS:]:
+        said = " ".join(earlier_answer.split())
+        if len(said) > HISTORY_ANSWER_CHARS:
+            said = said[:HISTORY_ANSWER_CHARS] + " ..."
+        lines.append(f"Earlier question: {earlier_question}\nYour answer: {said}")
+    lines.append(f"Question: {question}")
+    return "\n\n".join(lines)
+
+
+def _with_budget(observation: str, remaining: int) -> str:
+    """A result, with how many requests are left when that has become urgent."""
+    if remaining == 1:
+        return f"{observation}\n[One request left: ANSWER now with what you have.]"
+    if remaining <= 3:
+        return f"{observation}\n[{remaining} requests left.]"
+    return observation
+
+
+def _shrink(
+    messages: list[Message], observed: list[int], shortened: set[int], level: Effort
+) -> None:
+    """Replace old results with one line each, once the conversation is long.
+
+    The whole conversation is sent again on every request, so a result read
+    at request two is paid for at requests three to twelve - which is where
+    most of an agent's tokens go. Measured by JetBrains Research on SWE-bench
+    agents, replacing old tool output with a placeholder while keeping the
+    latest in full halved the cost and matched LLM-written summaries on solve
+    rate. It is done only past a budget, so an ordinary short question keeps
+    an unchanged history that a provider's cache can reuse.
+    """
+    size = sum(len(m.content) for m in messages)
+    if size <= level.conversation_budget:
+        return
+    for index in observed[: -level.keep_full or None]:
+        if index in shortened:
+            continue
+        content = messages[index].content
+        first = content.split("\n", 1)[0][:120]
+        lines = content.count("\n") + 1
+        messages[index] = Message(
+            role="user",
+            content=f"[Earlier result, shortened: {first} ... ({lines} lines). Ask again if you need it.]",
+        )
+        shortened.add(index)
+        size = sum(len(m.content) for m in messages)
+        if size <= level.conversation_budget:
+            return
+
+
+def _count(provider, system: str, messages: list[Message], reply: str, reported: dict) -> None:
+    """Add one request's cost, from the provider's own count when it has one."""
+    usage = getattr(provider, "last_usage", None)
+    if usage and usage[0] is not None:
+        reported["in"] += int(usage[0])
+        reported["out"] += int(usage[1] or 0)
+        reported["real"] = True
+        return
+    reported["in"] += estimate_tokens(system + "".join(m.content for m in messages))
+    reported["out"] += estimate_tokens(reply)
+
+
+def _account(answer: Answer, reported: dict) -> None:
+    answer.tokens_in = reported["in"]
+    answer.tokens_out = reported["out"]
+    answer.tokens_estimated = not reported["real"]
+
+
+def _shortened(reply: str) -> str:
+    """A refused reply as the conversation keeps it: enough to see the mistake."""
+    reply = reply.strip()
+    if len(reply) <= ECHO_LIMIT:
+        return reply
+    return f"{reply[:ECHO_LIMIT]} [... {len(reply) - ECHO_LIMIT} more characters]"
 
 
 def _mentions(text: str, name: str) -> bool:
@@ -502,9 +902,10 @@ def _confidence(
     checks = [
         Check(
             "ranked",
-            percent > 0,
+            percent > 0 or rel_path in session.mapped,
             f"Search ranked {rel_path} at {percent}%" if percent
-            else f"{rel_path} was never returned by a search",
+            else f"The project map listed {rel_path}" if rel_path in session.mapped
+            else f"{rel_path} was never returned by a search or the map",
         ),
         Check(
             "outline",

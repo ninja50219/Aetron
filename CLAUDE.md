@@ -7,12 +7,13 @@ design decisions, the current state, and where the previous session stopped.
 
 Last verified 2026-09-23 by running the suite, not by reading this file.
 
-- `main` is the only branch worth starting from, and every commit ever pushed
-  to this repository is contained in it. Four others exist:
-  `claude/gallant-bell-s94tns` has tracked `main` commit for commit, and
+- `main` is the branch to start from. Five others exist:
+  `claude/sleepy-galileo-8gywyf` holds the 2026-09-23 work below (the real
+  Ollama run, the hosted providers, the secret guards) until it is merged;
+  `claude/gallant-bell-s94tns` has tracked `main` commit for commit; and
   `feat/interactive-menu`, `feat/scanner` and `claude/funny-dijkstra-5snaae`
-  sit behind it. None holds work `main` lacks. Confirm rather than believe
-  this - a line like this one is stale the moment somebody pushes:
+  sit behind it. Confirm rather than believe this - a line like this one is
+  stale the moment somebody pushes:
 
   ```bash
   git fetch origin --prune
@@ -21,17 +22,31 @@ Last verified 2026-09-23 by running the suite, not by reading this file.
           && echo "$b: contained in main" || echo "$b: HAS WORK MAIN LACKS"
   done
   ```
-- 505 tests pass in about 3 seconds; 500 pass and 5 skip without `pathspec`.
+- 671 tests pass and 4 skip in about 7 seconds; run the suite without
+  `anthropic` and without `pathspec` too (see CONTRIBUTING.md) - the usual
+  Windows setup has no `anthropic`.
+  The 4 are `tests/test_ollama_live.py`, which runs only when
+  `AETRON_OLLAMA_MODEL` names a pulled model.
 - The pipeline runs end to end in two places. `aetron ask <project> "where is
   movement?"` answers from a terminal, and `aetron ui` opens a local page that
   does the same thing with the steps visible and the cited method on screen.
-- **The one thing nobody has done:** run any of this against a real local
-  model. Every test uses a scripted provider, because no environment this was
-  built in had an Ollama daemon. The loop, the parsing, the enforcement and the
-  citation are covered; whether a 7B model actually keeps to the command
-  language is unmeasured. If you have Ollama, that is the highest-value hour
-  available, and expect `SYSTEM_PROMPT` in `ask.py` to need work before the
-  code does.
+- **A real model has now run the protocol, and it keeps to the command
+  language.** On 2026-09-23, after the system prompt was finally being sent
+  (see the session log), the user ran `qwen2.5-coder` (7B) through the page on
+  Windows. Every reply was one well-formed command, no prose, no fences. It
+  still never answered: it looped on a refusal that was Aetron's fault, not
+  the model's, and that is fixed. Its first automatic summary was right in
+  substance and wrong in format - plain prose, then a bare `ANSWER` - and
+  that is fixed too (see the session log). Whether it now reaches an answer
+  end to end has not been re-run. The measurement, for any pulled model:
+
+  ```bash
+  AETRON_OLLAMA_MODEL=qwen2.5-coder python -m pytest tests/test_ollama_live.py -v -s
+  ```
+
+  `test_the_first_reply_is_a_command` is the measurement. Then ask the page a
+  question about a real project and read the trail: a refused step now says
+  why it was refused.
 
 ## What Aetron is for
 
@@ -60,6 +75,9 @@ question                                       cost         who decides
 L0  index        scan + filter + parse          free        Aetron, once
    |             never sent to the model
    v
+map              names only, ranked, budgeted   800-3000    Aetron, once
+   |             (context/overview.py)          tokens      per question
+   v
 L1  search       ranked candidate files         ~2 lines    model picks
    |             with a match % and a reason    per candidate
    v
@@ -80,6 +98,16 @@ that is mostly signatures can have a JSON skeleton *larger* than itself.
 **L0 — index.** The existing `scan` and `analyze` stages. The symbol index and
 import graph are built once and held by Aetron. They are the thing that makes
 everything below cheap. They are never handed to a model.
+
+**The map.** Added on 2026-09-23, after the first real model - starting from
+two lines about the project - searched "main" eleven times. Before its first
+step the model gets a view of the index cut to a token budget: file names, the
+names of what they define, where the program starts (a `__main__` guard, a
+`Main` method, a Unity component, a Roblox server script), what it depends
+on, and "+N more files in X/" for whatever did not fit. Names, never code.
+Files the map names count as found, exactly as search results do. This is
+Aider's repo map and Anthropic's "lightweight identifiers, loaded just in
+time", applied to this protocol; the index itself still never leaves.
 
 **L1 — search.** The model sends a term: `login`. Aetron matches it against
 symbol names, qualified names, file stems and docstrings, and returns a ranked
@@ -122,7 +150,7 @@ Each citation carries a **confidence**, which is four checks and not an
 opinion:
 
 ```
-ranked   25   a search returned this file, and at what percentage
+ranked   25   a search returned this file (and at what %), or the map listed it
 outline  25   the file's outline lists this definition, at these lines
 read     30   the model read this definition before answering
 named    20   the answer names the file or the definition it points at
@@ -171,8 +199,12 @@ changing anything below.
 aetron/
 ├── scanner/      walk the tree, decide what counts as source      DONE
 ├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#, JS/TS, Lua)
-├── context/      the retrieval protocol, L1-L3, plus summary      DONE
-├── ai_providers/ local and API models, behind one method          DONE
+├── context/      the map, the retrieval protocol L1-L3, summary   DONE
+├── ai_providers/ Ollama, Claude, and OpenAI-compatible (GPT,
+│                 Gemini), behind one method; keys from env only   DONE
+├── credentials.py what a key looks like; the ask loop hides one
+│                 from the model, the suite refuses to push one    DONE
+├── project_notes.py the project summary, kept in ~/.aetron        DONE
 ├── ask.py        the model drives L1-L3, and the answer is
 │                 resolved to one definition; the only module
 │                 that knows both halves of Aetron                 DONE
@@ -188,7 +220,7 @@ aetron/
 Verified by running the suite and the tool against itself and against the
 standard library, not by reading the README.
 
-**Working and tested** (505 tests, ~3s):
+**Working and tested** (671 tests, ~7s):
 
 - `scanner/` — tree walk, four kinds of ignore rule anchored to detected
   project roots, `.gitignore` via `pathspec`, generated and minified detection,
@@ -197,8 +229,23 @@ standard library, not by reading the README.
   pattern, the first three by counting braces and Lua by counting `end`. Import resolution for both dotted modules and path-style
   specifiers, entry points, dead code graded high/medium/low.
 - `context/` — all three retrieval levels, plus `insights` and `summary`.
-- `ask.py` — the loop, the enforcement, and the citation that ends it.
-- `ai_providers/` — Ollama and Anthropic behind one `complete` method.
+- `ask.py` — the loop, the enforcement, and the citation that ends it. Three
+  effort levels (requests, map budget, reason lines), `FILES` and `SKIPPED`,
+  a guard against repeated requests, a stop after three refusals in a row,
+  observation masking past a budget, follow-up questions carried as text, and
+  a token count on every answer.
+- `ai_providers/` — Ollama, Anthropic, and an OpenAI-compatible class serving
+  `openai` and `gemini`, behind one `complete` method. The Ollama request shape
+  is verified against a real daemon; the hosted ones against a loopback server
+  (and, for Claude, through the real SDK), never against the live APIs, since
+  no key was available and none should be. Keys come from environment
+  variables only, are sent only over HTTPS or to loopback, and are scrubbed
+  from errors. Hosted OpenAI-compatible models have no default: the person
+  paying names the model.
+- `credentials.py` and `tests/test_no_secrets.py` — anything shaped like an
+  API key is replaced before it reaches a model, and the suite fails if one is
+  tracked or about to be. `.gitignore` excludes `.env`, `*.key`, `*.pem` and
+  their kin as a second line.
 - `cli/` — `scan`, `analyze`, `explain`, `summary`, `search`, `structure`,
   `source`, `ask`, the `ui` command, and a numbered menu when run bare.
 - `web.py` and `web_ui/` — the local page. Asking runs on a thread and the
@@ -220,8 +267,10 @@ standard library, not by reading the README.
    "nine" and listed twelve, Lua among them, for a week after Lua landed.
 2. **Documentation generation** and **potential bug detection**, from the
    README checklist.
-3. **More providers.** `ai_providers/` has Ollama and Anthropic. A provider is
-   one class with one method, so GPT and Gemini are small additions.
+3. **More providers**, if wanted. GPT and Gemini landed on 2026-09-23 as one
+   OpenAI-compatible class; any other service speaking that API is an entry
+   in `ENDPOINTS` in `ai_providers/openai_compatible.py`, and one that does
+   not is one class with one method.
 
 **Known limits, worth knowing before trusting output:**
 
@@ -246,8 +295,12 @@ standard library, not by reading the README.
   in the project uses anything else in it. Turning one into
   a file means reading the Rojo project file and reproducing its mapping; an
   invented edge would be worse than no edge.
-- Search reads names and docstrings. It has no idea that "sign in" and "login"
-  are the same question; a synonym is a model's job, not an index's.
+- Search reads names and docstrings. It tolerates one slip of spelling in
+  words of five letters or more - a letter dropped, added, or two swapped - so
+  "movement" finds `PlayerMovment`, ranked below any exact spelling. It has
+  no idea that "sign in" and "login" are the same question; a synonym is a
+  model's job, not an index's, but a project's typo is not something a model
+  can know.
 - The `ranked` check passes by construction: only a file a search returned is
   eligible to be cited at all, so a citation's floor is 25 and three of the
   four checks are what actually vary. The check is kept because its detail
@@ -262,11 +315,29 @@ standard library, not by reading the README.
   class contains its methods and "line 7" is true of both. That is right for
   "where is movement" and wrong for a question whose answer really is the
   whole class; the outline is one click away for that case.
-- `ask` has never been run against a real local model in this repository -
-  there is no Ollama daemon in the environment it was written in. The loop,
-  the parsing and the enforcement are covered by a scripted provider; how well
-  a 7B model actually follows the protocol is unmeasured, and the first person
-  with Ollama installed should find out.
+- The map is re-sent with every request of a question. Ollama and Anthropic
+  cache it as a prefix, so it is paid for once in compute there; a hosted API
+  without prompt caching bills it each time. An effort's map budget is the
+  knob, and low effort's is 800 tokens.
+- A reason line (`THINK:`) is requested above low effort and never sent back
+  to the model; it exists for the reader. Whether a 7B model writes useful
+  ones is unmeasured.
+- `ask` has met one real model twice (qwen2.5-coder 7B, see above), and not
+  yet end to end. Small models shorten paths - `PlayerMovment.cs` for
+  `Assets/Scripts/PlayerMovment.cs` - so a file is resolved from what the
+  model wrote when exactly one file it already found fits; two that fit are
+  listed back to it. Nothing unsearched is ever resolved.
+- Ollama caps `num_ctx` at the length a model was trained at. Aetron asks for
+  16384; a model trained at 8192 gets 8192, and a long question on it can
+  still lose its oldest messages. The question is restated in the system
+  prompt, which Ollama keeps, so what is lost is early search results rather
+  than what was asked.
+- Reasoning models (qwen3, deepseek-r1) may spend the 1024-token reply
+  ceiling on thinking and return nothing. Untested; the TODO in
+  `ai_providers/ollama.py` has the recommendation.
+- Credential hiding matches key formats by their provider prefixes. A key
+  with no recognisable shape - a database password, a bespoke token - goes to
+  the model like any other string.
 
 ## Conventions
 
@@ -326,6 +397,173 @@ its styles or logic does not.
 
 Append one entry per session. State what landed and what the next session
 should pick up.
+
+### 2026-09-23 — a real Ollama, hosted models, and keys kept out
+
+The task was to add local AI, prepare for hosted models chosen by API key, and
+make sure no key or other secret could reach GitHub.
+
+**Ollama, for real.** 0.34.3 installs from its GitHub release (1.4 GB with GPU
+libraries, 97 MB without). No model could be pulled: the network policy
+blocks `ollama.com`, `registry.ollama.ai` and `huggingface.co`, and fetching
+weights from a third-party GitHub mirror was refused rather than routed
+around. So the daemon was driven with GGUF probes written from scratch - a
+74K-parameter llama with a byte vocabulary, in three variants: random
+weights; one that repeats `x` forever; one that alternates `x` and `y`. They
+cannot answer anything. Because every byte is one token, they measure exactly
+what Ollama builds from a request, and that was enough to find four silent
+failures:
+
+1. **The system prompt was never sent.** `/api/chat` has no top-level
+   `system` field and ignores unknown keys. A 1323-character `SYSTEM_PROMPT`
+   added zero tokens to the prompt; as a `system` message it adds 1323.
+   Every local model Aetron had ever driven had been asked to write a command
+   language it was never shown. This alone may explain whatever a first real
+   run would have gone on to report about small models and the protocol.
+2. **A long question lost its question.** Ollama gives a model 4096 tokens
+   unless asked, and past that drops the oldest messages but keeps the system
+   prompt. An eight-request walk on this repository peaks near 5600 tokens.
+   Now `num_ctx` is 16384, and the question is restated in the system prompt
+   because Ollama caps `num_ctx` at the model's trained length.
+3. **A looping reply ran for two hours.** Unbounded, the alternating probe
+   produced 40960 tokens before Ollama's own cap; a single repeated token is
+   caught sooner by Ollama's repeat limit, which answers 500. `num_predict`
+   is now 1024, and a refused reply is echoed back shortened, since a
+   thousand tokens of nothing per turn filled an 8192-token context in six.
+4. **A slow model crashed the terminal.** urllib wraps a timeout while
+   connecting, not one while waiting for the reply, so a model slower than
+   300 seconds raised a bare `TimeoutError` past every handler.
+
+Found on the way, in code that had been tested: **`SOURCE aetron/ask.py ask`
+returned the whole 614-line file.** The parser records each file as a
+`MODULE` symbol named after it, `get_source` matched it before the function,
+and the model, the citation and the explorer all received the file. Four
+files in this repository alone were affected. Modules are no longer
+candidates at level 3.
+
+**Hosted models.** `openai` and `gemini` are one OpenAI-compatible class over
+urllib; `anthropic` stays on the SDK. Found through the SDK: with no key it
+builds a client happily and raises a bare `TypeError` on the first request,
+which killed the page's worker thread and left its question "running" - the
+page polled forever and every rescan was refused. The provider now names the
+missing variable, and the worker finishes its job whatever is raised. The
+Anthropic provider also got `max_tokens` 16000 (Opus 5 thinks by default, and
+thinking counts against it) and server-side refusal fallbacks
+(`fallbacks: "default"`) for the Opus 5 and Fable 5 families, per the Claude
+API documentation. The page's sidebar said "Code stays on this computer"
+whatever was selected; it now follows the provider.
+
+**Keys.** Environment variables only, never a file, never the page. Sent only
+over HTTPS or to loopback. Scrubbed from every error. `aetron/credentials.py`
+hides anything key-shaped from the model - a hard-coded key in someone's
+project is exactly what level 3 might read - and `tests/test_no_secrets.py`
+fails the suite if one is tracked or about to be, checked by planting one.
+
+Verified: the suite with and without `pathspec` and `anthropic`; the tests
+for each finding fail on the code before this session; `aetron ask` and the
+page driven end to end against the real daemon, desktop and phone width, no
+CSP violations. 505 tests became 573.
+
+**Later the same day: the first real model.** The user installed Ollama on
+Windows and asked the page "where is my movment script" with qwen2.5-coder.
+The model kept to the command language perfectly - the question this project
+had carried since its first session - and still never answered. The trail:
+
+    SEARCH movement script
+    OUTLINE PlayerMovment.cs        refused
+    SEARCH PlayerMovment.cs
+    OUTLINE PlayerMovment.cs        refused, and so on to twelve
+
+The search had offered `Assets/Scripts/PlayerMovment.cs`; the model wrote the
+file name alone; and the refusal said the file "has not come up in a search",
+which was false, so the model searched again and again. Four fixes, each
+with a test built from the model's trail:
+
+- A file named loosely - bare name, any case, backslashes - resolves to the
+  one found file it fits, and the step is recorded under the real path.
+  Two that fit are listed back. The rule is unchanged: nothing unsearched.
+- `SOURCE` split its argument at the first space, which broke on
+  `Assets/My Scripts/...`; it splits at the last, since names have none.
+- Search tolerates one slip of spelling. Replaying the trail found that the
+  model had corrected "movment" to "movement", and the file is spelled
+  `PlayerMovment` - so on a project without other matches the first search
+  finds nothing at all. Costs about 10% of a search over the standard
+  library, after caching.
+- The page showed a refusal only as a colour. It now says what the model was
+  told, which is how the loop above would have been obvious at a glance.
+
+**Later still: the agent.** A second real run - "What starts the program?"
+on a folder of Python scripts - went `SEARCH startup`, then `SEARCH main`
+eleven times, each run again. The model had started from two lines about the
+project. The user asked for an agent that understands the repository cheaply,
+and research on how others do it (Aider's repo map; Anthropic's context
+engineering guidance; JetBrains Research's observation masking; how chat
+assistants show reasoning) shaped what landed:
+
+- `context/overview.py`: the map above. Fitted incrementally (the first
+  version re-rendered it per file, quadratic in the project), 10-34 ms on
+  the standard library, public names before private helpers.
+- `ask.py`, protocol v2: map and instructions first as a cacheable prefix,
+  the question last; `FILES`, `SKIPPED`; repeats refused with a pointer;
+  three refusals in a row stop the question; results shrink past a budget;
+  efforts; `THINK:` reasons; follow-ups; token counts; `summarize()`.
+- Ollama: `think` only for models whose `/api/show` lists "thinking" - sent
+  blind it is an HTTP 400, measured - off at low effort, a level for gpt-oss;
+  `message.thinking` shown; real token counts; `keep_alive` 30 minutes; a
+  preload on project open. A model that only thinks now says so. Tested
+  against the real daemon with probes built with `PARSER deepseek3`.
+- Anthropic: `output_config.effort`, summarized adaptive thinking, and
+  top-level `cache_control`, checked through the SDK over loopback.
+- The page: an "About this project" summary written once and stored in
+  `~/.aetron/summaries`; a conversation with each answer's thinking folded
+  under an icon; a model list from Ollama and an effort slider that says what
+  it spends; an explorer that opens on a file tree, important files first,
+  one-child folders compacted, outlines grouped into functions, types and
+  variables. The page may outline any indexed file - it is the owner's; the
+  model is still rationed in `ask.py`.
+- Found in the browser: the `ranked` check only passed for search results,
+  so a perfect walk from the map scored 75. The map now counts.
+
+Measured on a Projekty-shaped folder: the real trail cost 12 requests and
+~6,800 tokens with no answer; the same question now costs 1 request (~580
+tokens) from the map, or 3 (~1,950) reading `main` first.
+
+**Then the first real summary.** The user opened the folder again and the
+page wrote its "About this project" card with qwen2.5-coder. It never
+arrived: 93 seconds, the card still empty. The trail showed the model had
+understood the project from the map alone and said so in its first reply -
+"This project seems to be a Unity-based application ... main script ...
+`PlayerMovment.cs`" - as plain text, with no `ANSWER` in front. Refused, it
+sent `ANSWER` alone, meaning "that"; refused again, it sent the prose again.
+Three things, all Aetron's:
+
+- The summary question said *begin with "This project seems to be"*, which
+  is more specific than the rule saying *answer with ANSWER*, and a 7B model
+  obeyed the more specific one. The question now shows the line it wants:
+  `Reply as: ANSWER This project seems to be ...`. The system prompt got
+  three example replies for the same reason.
+- Prose that reads as an answer (six words or more, not a plan such as
+  "let me check") is now taken as the answer when a summary was asked for,
+  or when a model sends it twice running; the first time elsewhere it is
+  refused with the exact line that would have worked. A bare `ANSWER`
+  straight after such prose answers with that prose. A plan is never taken.
+- The stop after three refusals only looked at refused commands, so a model
+  alternating a reply with no command and a bare `ANSWER` ran to the end of
+  its budget. It now runs after every refusal.
+
+The replayed trail takes one step and saves the summary; the page drove the
+same replay against the real daemon and filled the card at "≈799 tokens".
+The trail labels a reply with no command `NO COMMAND` rather than `RETRY`,
+which described what Aetron wanted rather than what the model sent.
+
+**What the next session should pick up:**
+
+1. **The same questions again with a real model**, end to end: the summary,
+   "What starts the program?" and "where is my movment script". Only the
+   summary has met a real model against the map, and only before the fix.
+2. **A Java or Go parser**, as before.
+3. Whether a 7B model's `THINK:` lines are worth their tokens; if not, make
+   reasons a high-effort-only feature.
 
 ### 2026-09-14 — the redesign and the model, merged
 

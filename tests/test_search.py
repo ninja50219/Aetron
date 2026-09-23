@@ -220,3 +220,55 @@ class TestRanking:
     def test_a_score_is_never_reported_as_certain(self, make_project):
         layout = {"login.py": "class Login:\n    def login(self):\n        pass\n"}
         assert find(make_project, layout, "login")[0].percent <= 99
+
+
+class TestASpellingSlip:
+    """A real project named its script PlayerMovment.cs. Asked about movement,
+    the search found nothing at all - and a model cannot know a project's
+    typos, so it cannot search its way around one."""
+
+    UNITY = {
+        "Assets/Scripts/PlayerMovment.cs": "public class PlayerMovment\n{\n    void Update() { }\n}\n",
+        "Assets/Scripts/UI/HealthBar.cs": "public class HealthBar\n{\n}\n",
+    }
+
+    def test_a_misspelled_file_is_found_by_the_right_spelling(self, make_project):
+        found = find(make_project, self.UNITY, "movement")
+        assert paths(found)[0] == "Assets/Scripts/PlayerMovment.cs"
+        # Said as what it is, so neither the model nor the reader mistakes
+        # it for an exact match.
+        assert "near spelling of movement" in found[0].reason
+
+    def test_the_right_spelling_finds_the_misspelled_question_too(self, make_project):
+        layout = {"Player/PlayerMovement.cs": "public class PlayerMovement\n{\n}\n"}
+        assert paths(find(make_project, layout, "movment")) == ["Player/PlayerMovement.cs"]
+
+    def test_an_exact_spelling_outranks_a_near_one(self, make_project):
+        layout = {
+            "PlayerMovment.cs": "public class PlayerMovment\n{\n}\n",
+            "EnemyMovement.cs": "public class EnemyMovement\n{\n}\n",
+        }
+        assert paths(find(make_project, layout, "movement")) == [
+            "EnemyMovement.cs",
+            "PlayerMovment.cs",
+        ]
+
+    def test_a_plural_folder_counts(self, make_project):
+        """"movement script" asks about a Scripts folder."""
+        found = find(make_project, self.UNITY, "movement script")
+        assert paths(found)[0] == "Assets/Scripts/PlayerMovment.cs"
+        assert "in Scripts/" in found[0].reason
+
+    def test_two_swapped_letters_count(self, make_project):
+        layout = {"health.py": "def recieve_health():\n    pass\n"}
+        assert paths(find(make_project, layout, "receive")) == ["health.py"]
+
+    def test_a_changed_letter_does_not(self, make_project):
+        """login and logic differ by one letter and mean different things."""
+        layout = {"parser.py": "def logic():\n    pass\n"}
+        assert find(make_project, layout, "login") == []
+
+    def test_short_words_are_left_exact(self, make_project):
+        """Below five letters, one letter is too much of the word."""
+        assert find(make_project, {"b.py": "def tag():\n    pass\n"}, "tags") == []
+        assert find(make_project, {"c.py": "def item():\n    pass\n"}, "items") == []

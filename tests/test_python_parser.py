@@ -138,3 +138,30 @@ class TestModuleSymbol:
 
     def test_a_file_that_will_not_parse_has_no_module_symbol(self):
         assert parse("def broken(:\n", "a.py").symbols == []
+
+
+class TestRunsAsAScript:
+    """What starts the program is the first question asked of a project, and
+    the import graph cannot answer it for a folder of scripts."""
+
+    def test_a_main_guard_marks_the_file(self):
+        from aetron.analyzer.python_parser import parse
+
+        assert parse('def run():\n    pass\n\nif __name__ == "__main__":\n    run()\n', "a.py").runs_as_script
+
+    def test_the_guard_written_backwards_counts(self):
+        from aetron.analyzer.python_parser import parse
+
+        assert parse("if '__main__' == __name__:\n    pass\n", "a.py").runs_as_script
+
+    def test_reading_name_for_a_logger_does_not(self):
+        from aetron.analyzer.python_parser import parse
+
+        text = "import logging\nlog = logging.getLogger(__name__)\n"
+        assert not parse(text, "lib.py").runs_as_script
+
+    def test_a_guard_inside_a_function_does_not(self):
+        from aetron.analyzer.python_parser import parse
+
+        text = "def f():\n    if __name__ == '__main__':\n        pass\n"
+        assert not parse(text, "a.py").runs_as_script
