@@ -30,6 +30,7 @@ def parse(text: str, rel_path: str) -> FileSymbols:
         return result
 
     result.symbols.append(_build_module(tree, text, rel_path))
+    result.runs_as_script = any(_is_main_guard(node) for node in tree.body)
     _visit_body(tree.body, result, prefix="")
     result.references = _collect_references(tree)
     result.dynamic_prefixes = _collect_dynamic_prefixes(tree)
@@ -54,6 +55,24 @@ def _build_module(tree: ast.Module, text: str, rel_path: str) -> Symbol:
         qualified_name=name,
         docstring=ast.get_docstring(tree),
     )
+
+
+def _is_main_guard(node: ast.stmt) -> bool:
+    """``if __name__ == "__main__":``, written either way round.
+
+    Checked in the tree rather than by looking for ``__name__`` among the
+    file's references, because ``logging.getLogger(__name__)`` reads it too
+    and nearly every library module does that.
+    """
+    if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+        return False
+    test = node.test
+    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return False
+    sides = [test.left, test.comparators[0]]
+    names = [s for s in sides if isinstance(s, ast.Name) and s.id == "__name__"]
+    mains = [s for s in sides if isinstance(s, ast.Constant) and s.value == "__main__"]
+    return len(names) == 1 and len(mains) == 1
 
 
 # Shorter fragments match half the project and destroy the signal.
