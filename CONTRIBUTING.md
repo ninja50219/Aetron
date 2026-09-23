@@ -50,6 +50,12 @@ pip install pathspec
 Both runs matter. `pathspec` is optional at runtime, and a bug that only
 appears without it has already shipped once.
 
+The suite includes `tests/test_no_secrets.py`, which fails if anything shaped
+like an API key is tracked or about to be. If it fires, do not weaken it:
+remove the key, revoke it with its provider, and read it from an environment
+variable. A test that needs a fake key builds it at runtime, so no key-shaped
+literal is ever committed.
+
 Then rebase or merge `main` in and run the suite again, so the conflict is
 yours to resolve rather than the next person's:
 

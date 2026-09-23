@@ -21,7 +21,7 @@ by name but not yet read.
 | Link files, imports, inheritance | `aetron/analyzer` | working |
 | Build an optimised representation | `aetron/context` | working |
 | Report a whole project offline | `aetron/context` | working |
-| Send only relevant context to a model | `aetron/ai_providers` | working (Ollama, Claude) |
+| Send only relevant context to a model | `aetron/ai_providers` | working (Ollama, Claude, GPT, Gemini) |
 
 ## Problem
 
@@ -61,9 +61,8 @@ output and editor state.
 - [x] C#, JavaScript, TypeScript and Lua/Luau parsers
 - [x] Roblox projects: `.luau`, and Wally's vendored `Packages` left out
 - [x] Support for local models (Ollama: Llama, Qwen, DeepSeek)
-- [x] Support for API models (Claude)
+- [x] Support for API models (Claude, GPT, Gemini), keys read from the environment only
 - [ ] Parsers for the remaining nine languages
-- [ ] GPT and Gemini providers
 - [ ] Documentation generation
 - [ ] Potential bug detection
 
@@ -206,17 +205,61 @@ from a search, its outline lists this definition at these lines, the model read
 it, and the answer names it — so 100% means every check that could be made was
 made and held. It is not a probability that the answer is right.
 
+### A local model (the default)
+
 By default this runs against a local model through
-[Ollama](https://ollama.com), so nothing leaves the machine:
+[Ollama](https://ollama.com), so nothing leaves the machine. Install Ollama
+from its website, then:
 
 ```bash
-ollama serve
-ollama pull qwen2.5-coder
+ollama serve                    # the desktop app starts this for you
+ollama pull qwen2.5-coder       # about 4.7 GB; qwen2.5-coder:3b if RAM is tight
 python -m aetron ask /path/to/project "where are passwords hashed?"
 ```
 
-For Claude instead, `pip install anthropic`, set `ANTHROPIC_API_KEY`, and add
-`--provider anthropic`.
+`--model` picks any other model you have pulled. Aetron asks Ollama for a
+16384-token context, so a long question does not silently lose its opening
+message, and caps each reply at 1024 tokens. On a laptop CPU a 7B model takes
+tens of seconds per step.
+
+Whether a given local model follows Aetron's command language is something
+you can measure in a minute:
+
+```bash
+AETRON_OLLAMA_MODEL=qwen2.5-coder python -m pytest tests/test_ollama_live.py -v -s
+```
+
+### A hosted model, with an API key
+
+Four providers: `ollama` (local), `anthropic` (Claude), `openai` (GPT) and
+`gemini`. A hosted model receives your question and the few lines it asks to
+see, never the repository, and anything shaped like an API key in those lines
+is replaced before it is sent.
+
+| Provider | Key variable | Model |
+|---|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY`, or `ant auth login` | `claude-opus-5` by default; e.g. `--model claude-opus-5-5` |
+| `openai` | `OPENAI_API_KEY` | required: `--model <name>` |
+| `gemini` | `GEMINI_API_KEY` | required: `--model <name>` |
+
+```bash
+pip install anthropic                          # only for --provider anthropic
+export OPENAI_API_KEY="..."                    # Windows: setx OPENAI_API_KEY "..."
+python -m aetron ask . "where is login?" --provider openai --model <model>
+```
+
+Keys come from **environment variables only**. Aetron never reads one from a
+file, never writes one anywhere, never asks for one in the page, and scrubs it
+from any error it shows. Hosted models must be named because the model decides
+what you are billed. `OPENAI_BASE_URL` points the `openai` provider at any
+other service that speaks the same API; a key is only ever sent over HTTPS, or
+to a server on this machine.
+
+**Keeping keys out of git.** Do not put a key in a `.env` or any other file
+inside a project. If you do anyway, `.gitignore` already excludes `.env`,
+`*.key`, `*.pem`, `secrets.*` and `credentials.json`, and
+`tests/test_no_secrets.py` fails the test suite if anything shaped like a key
+is tracked or about to be.
 
 ### The three levels, by hand
 
@@ -288,6 +331,7 @@ aetron/
 │   ├── summary.py    what a newcomer reads first
 │   └── render.py     the summary as an English report, claims nothing extra
 ├── ai_providers/     local models and API models, behind one method
+├── credentials.py    what an API key looks like, so none is sent or pushed
 ├── ask.py            the model drives the levels, the rules are enforced
 │                     here, and the answer is resolved to one definition
 ├── web.py            the local server behind `aetron ui`

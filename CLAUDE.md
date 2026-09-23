@@ -7,12 +7,13 @@ design decisions, the current state, and where the previous session stopped.
 
 Last verified 2026-09-23 by running the suite, not by reading this file.
 
-- `main` is the only branch worth starting from, and every commit ever pushed
-  to this repository is contained in it. Four others exist:
-  `claude/gallant-bell-s94tns` has tracked `main` commit for commit, and
+- `main` is the branch to start from. Five others exist:
+  `claude/sleepy-galileo-8gywyf` holds the 2026-09-23 work below (the real
+  Ollama run, the hosted providers, the secret guards) until it is merged;
+  `claude/gallant-bell-s94tns` has tracked `main` commit for commit; and
   `feat/interactive-menu`, `feat/scanner` and `claude/funny-dijkstra-5snaae`
-  sit behind it. None holds work `main` lacks. Confirm rather than believe
-  this - a line like this one is stale the moment somebody pushes:
+  sit behind it. Confirm rather than believe this - a line like this one is
+  stale the moment somebody pushes:
 
   ```bash
   git fetch origin --prune
@@ -21,17 +22,29 @@ Last verified 2026-09-23 by running the suite, not by reading this file.
           && echo "$b: contained in main" || echo "$b: HAS WORK MAIN LACKS"
   done
   ```
-- 505 tests pass in about 3 seconds; 500 pass and 5 skip without `pathspec`.
+- 573 tests pass and 4 skip in about 6 seconds; 568 pass and 9 skip without
+  `pathspec`, 562 and 15 without `anthropic` as well. The 4 are
+  `tests/test_ollama_live.py`, which runs only when `AETRON_OLLAMA_MODEL`
+  names a pulled model.
 - The pipeline runs end to end in two places. `aetron ask <project> "where is
   movement?"` answers from a terminal, and `aetron ui` opens a local page that
   does the same thing with the steps visible and the cited method on screen.
-- **The one thing nobody has done:** run any of this against a real local
-  model. Every test uses a scripted provider, because no environment this was
-  built in had an Ollama daemon. The loop, the parsing, the enforcement and the
-  citation are covered; whether a 7B model actually keeps to the command
-  language is unmeasured. If you have Ollama, that is the highest-value hour
-  available, and expect `SYSTEM_PROMPT` in `ask.py` to need work before the
-  code does.
+- **A real Ollama daemon has now been run; a real model still has not.**
+  Ollama 0.34.3 was installed from its GitHub release on 2026-09-23 and driven
+  with probe models built from random weights, since the environment's network
+  policy blocks `ollama.com`, `registry.ollama.ai` and `huggingface.co`. That
+  was enough to find that **the system prompt had never been sent** - every
+  local model ever pointed at Aetron was asked to follow a command language it
+  had not been shown - plus three more silent failures, all fixed (see the
+  session log). Whether a 7B model follows `SYSTEM_PROMPT` now that it can
+  see it is still unmeasured. With Ollama and a pulled model it is one line:
+
+  ```bash
+  AETRON_OLLAMA_MODEL=qwen2.5-coder python -m pytest tests/test_ollama_live.py -v -s
+  ```
+
+  `test_the_first_reply_is_a_command` is the measurement. If it fails, the
+  prompt needs work before the code does.
 
 ## What Aetron is for
 
@@ -172,7 +185,10 @@ aetron/
 ├── scanner/      walk the tree, decide what counts as source      DONE
 ├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#, JS/TS, Lua)
 ├── context/      the retrieval protocol, L1-L3, plus summary      DONE
-├── ai_providers/ local and API models, behind one method          DONE
+├── ai_providers/ Ollama, Claude, and OpenAI-compatible (GPT,
+│                 Gemini), behind one method; keys from env only   DONE
+├── credentials.py what a key looks like; the ask loop hides one
+│                 from the model, the suite refuses to push one    DONE
 ├── ask.py        the model drives L1-L3, and the answer is
 │                 resolved to one definition; the only module
 │                 that knows both halves of Aetron                 DONE
@@ -188,7 +204,7 @@ aetron/
 Verified by running the suite and the tool against itself and against the
 standard library, not by reading the README.
 
-**Working and tested** (505 tests, ~3s):
+**Working and tested** (573 tests, ~6s):
 
 - `scanner/` — tree walk, four kinds of ignore rule anchored to detected
   project roots, `.gitignore` via `pathspec`, generated and minified detection,
@@ -198,7 +214,18 @@ standard library, not by reading the README.
   specifiers, entry points, dead code graded high/medium/low.
 - `context/` — all three retrieval levels, plus `insights` and `summary`.
 - `ask.py` — the loop, the enforcement, and the citation that ends it.
-- `ai_providers/` — Ollama and Anthropic behind one `complete` method.
+- `ai_providers/` — Ollama, Anthropic, and an OpenAI-compatible class serving
+  `openai` and `gemini`, behind one `complete` method. The Ollama request shape
+  is verified against a real daemon; the hosted ones against a loopback server
+  (and, for Claude, through the real SDK), never against the live APIs, since
+  no key was available and none should be. Keys come from environment
+  variables only, are sent only over HTTPS or to loopback, and are scrubbed
+  from errors. Hosted OpenAI-compatible models have no default: the person
+  paying names the model.
+- `credentials.py` and `tests/test_no_secrets.py` — anything shaped like an
+  API key is replaced before it reaches a model, and the suite fails if one is
+  tracked or about to be. `.gitignore` excludes `.env`, `*.key`, `*.pem` and
+  their kin as a second line.
 - `cli/` — `scan`, `analyze`, `explain`, `summary`, `search`, `structure`,
   `source`, `ask`, the `ui` command, and a numbered menu when run bare.
 - `web.py` and `web_ui/` — the local page. Asking runs on a thread and the
@@ -220,8 +247,10 @@ standard library, not by reading the README.
    "nine" and listed twelve, Lua among them, for a week after Lua landed.
 2. **Documentation generation** and **potential bug detection**, from the
    README checklist.
-3. **More providers.** `ai_providers/` has Ollama and Anthropic. A provider is
-   one class with one method, so GPT and Gemini are small additions.
+3. **More providers**, if wanted. GPT and Gemini landed on 2026-09-23 as one
+   OpenAI-compatible class; any other service speaking that API is an entry
+   in `ENDPOINTS` in `ai_providers/openai_compatible.py`, and one that does
+   not is one class with one method.
 
 **Known limits, worth knowing before trusting output:**
 
@@ -262,11 +291,21 @@ standard library, not by reading the README.
   class contains its methods and "line 7" is true of both. That is right for
   "where is movement" and wrong for a question whose answer really is the
   whole class; the outline is one click away for that case.
-- `ask` has never been run against a real local model in this repository -
-  there is no Ollama daemon in the environment it was written in. The loop,
-  the parsing and the enforcement are covered by a scripted provider; how well
-  a 7B model actually follows the protocol is unmeasured, and the first person
-  with Ollama installed should find out.
+- `ask` has been run against a real Ollama daemon but not a real model: the
+  environment it was written in could install Ollama and could not download
+  weights. The transport is verified; how well a 7B model follows the protocol
+  is unmeasured, and `tests/test_ollama_live.py` is how to find out.
+- Ollama caps `num_ctx` at the length a model was trained at. Aetron asks for
+  16384; a model trained at 8192 gets 8192, and a long question on it can
+  still lose its oldest messages. The question is restated in the system
+  prompt, which Ollama keeps, so what is lost is early search results rather
+  than what was asked.
+- Reasoning models (qwen3, deepseek-r1) may spend the 1024-token reply
+  ceiling on thinking and return nothing. Untested; the TODO in
+  `ai_providers/ollama.py` has the recommendation.
+- Credential hiding matches key formats by their provider prefixes. A key
+  with no recognisable shape - a database password, a bespoke token - goes to
+  the model like any other string.
 
 ## Conventions
 
@@ -326,6 +365,80 @@ its styles or logic does not.
 
 Append one entry per session. State what landed and what the next session
 should pick up.
+
+### 2026-09-23 — a real Ollama, hosted models, and keys kept out
+
+The task was to add local AI, prepare for hosted models chosen by API key, and
+make sure no key or other secret could reach GitHub.
+
+**Ollama, for real.** 0.34.3 installs from its GitHub release (1.4 GB with GPU
+libraries, 97 MB without). No model could be pulled: the network policy
+blocks `ollama.com`, `registry.ollama.ai` and `huggingface.co`, and fetching
+weights from a third-party GitHub mirror was refused rather than routed
+around. So the daemon was driven with GGUF probes written from scratch - a
+74K-parameter llama with a byte vocabulary, in three variants: random
+weights; one that repeats `x` forever; one that alternates `x` and `y`. They
+cannot answer anything. Because every byte is one token, they measure exactly
+what Ollama builds from a request, and that was enough to find four silent
+failures:
+
+1. **The system prompt was never sent.** `/api/chat` has no top-level
+   `system` field and ignores unknown keys. A 1323-character `SYSTEM_PROMPT`
+   added zero tokens to the prompt; as a `system` message it adds 1323.
+   Every local model Aetron had ever driven had been asked to write a command
+   language it was never shown. This alone may explain whatever a first real
+   run would have gone on to report about small models and the protocol.
+2. **A long question lost its question.** Ollama gives a model 4096 tokens
+   unless asked, and past that drops the oldest messages but keeps the system
+   prompt. An eight-request walk on this repository peaks near 5600 tokens.
+   Now `num_ctx` is 16384, and the question is restated in the system prompt
+   because Ollama caps `num_ctx` at the model's trained length.
+3. **A looping reply ran for two hours.** Unbounded, the alternating probe
+   produced 40960 tokens before Ollama's own cap; a single repeated token is
+   caught sooner by Ollama's repeat limit, which answers 500. `num_predict`
+   is now 1024, and a refused reply is echoed back shortened, since a
+   thousand tokens of nothing per turn filled an 8192-token context in six.
+4. **A slow model crashed the terminal.** urllib wraps a timeout while
+   connecting, not one while waiting for the reply, so a model slower than
+   300 seconds raised a bare `TimeoutError` past every handler.
+
+Found on the way, in code that had been tested: **`SOURCE aetron/ask.py ask`
+returned the whole 614-line file.** The parser records each file as a
+`MODULE` symbol named after it, `get_source` matched it before the function,
+and the model, the citation and the explorer all received the file. Four
+files in this repository alone were affected. Modules are no longer
+candidates at level 3.
+
+**Hosted models.** `openai` and `gemini` are one OpenAI-compatible class over
+urllib; `anthropic` stays on the SDK. Found through the SDK: with no key it
+builds a client happily and raises a bare `TypeError` on the first request,
+which killed the page's worker thread and left its question "running" - the
+page polled forever and every rescan was refused. The provider now names the
+missing variable, and the worker finishes its job whatever is raised. The
+Anthropic provider also got `max_tokens` 16000 (Opus 5 thinks by default, and
+thinking counts against it) and server-side refusal fallbacks
+(`fallbacks: "default"`) for the Opus 5 and Fable 5 families, per the Claude
+API documentation. The page's sidebar said "Code stays on this computer"
+whatever was selected; it now follows the provider.
+
+**Keys.** Environment variables only, never a file, never the page. Sent only
+over HTTPS or to loopback. Scrubbed from every error. `aetron/credentials.py`
+hides anything key-shaped from the model - a hard-coded key in someone's
+project is exactly what level 3 might read - and `tests/test_no_secrets.py`
+fails the suite if one is tracked or about to be, checked by planting one.
+
+Verified: the suite with and without `pathspec` and `anthropic`; the tests
+for each finding fail on the code before this session; `aetron ask` and the
+page driven end to end against the real daemon, desktop and phone width, no
+CSP violations. 505 tests became 573.
+
+**What the next session should pick up:**
+
+1. **Pull a real model and run `tests/test_ollama_live.py`.** Ten minutes on
+   any machine with Ollama. It is now a fair test: until today the model
+   could not have passed it.
+2. **A Java or Go parser**, as before.
+3. Reasoning models and `num_predict` - see the TODO in `ollama.py`.
 
 ### 2026-09-14 — the redesign and the model, merged
 
