@@ -82,23 +82,34 @@ back to its built-in ignore rules instead of reading `.gitignore`.
 For the visual frontend, double-click `Aetron.cmd` on Windows, or run
 `python -m aetron ui`. A browser opens a local workspace with two ways to work.
 
-**Ask Aetron** is the question box. Type `where is movement?`, pick a model,
-and the page shows each request as it happens — the search, the one outline,
-the one definition — then the answer: a confidence ring, the file and line, and
-the body of the single method it points at. Clicking the location opens that
-file in the explorer. With Ollama selected nothing leaves the machine; the
-chip beside the model says so, and says the opposite when you choose a hosted
-provider. A local model can take minutes, and the page stays usable while it
-works.
+**Ask Aetron** is a conversation with an agent that knows the project. When
+a project opens, the agent writes a two-or-three sentence summary of it from
+the map - automatically with a local model, on a click with a hosted one - and
+remembers it for next time. Then ask in your own words, and ask follow-ups:
+each question carries the earlier answers, not the work behind them.
 
-**Code explorer** is the same three levels by hand: recent projects, search
-results, clickable definitions, a source viewer, project overview and
-omitted-file reports. Keep the terminal open while using it;
+Each answer comes with its thinking, folded away the way chat assistants fold
+theirs: open it to see every request the agent made and why, in its own
+words, or a reasoning model's own thinking. The answer itself is a confidence
+ring, the file and line, and the body of the single definition it points at;
+clicking the location opens it in the explorer. Under the question box, pick
+the provider, the model (your installed Ollama models are listed, reasoning
+ones marked "thinks"), and the effort - Fast, Balanced or Thorough - with what
+each one spends written beside it. With Ollama nothing leaves the machine, and
+the page says the opposite when you choose a hosted provider.
+
+**Code explorer** opens on the project's file tree: the files that matter
+first (starred, with "script" or "Unity script" beside anything that starts the
+program), then every folder, one-child folders compacted into one row, and a
+filter box. Click a file for its functions, classes and variables with their
+line numbers; click one to read it. Search is there too, and clearing it goes
+back to the tree. Keep the terminal open while using it;
 Ctrl+C stops the server. `--no-browser` prints the URL without opening it,
 and `--port 8765` selects a fixed port instead of an automatically chosen one.
 The server listens only on `127.0.0.1`, uses no external assets or services,
-and shares project history with the terminal menu. Search spelling matters:
-the existing index matches names and docstrings, not synonyms or fuzzy terms.
+and shares project history with the terminal menu. Search matches names and
+docstrings, and forgives one slip of spelling ("movement" finds
+`PlayerMovment`), but not synonyms: "sign in" does not find `login`.
 
 Run `python -m aetron` without arguments to open the menu. Choose a recent
 project by number, or enter a new project directory once. Recent paths are
@@ -181,8 +192,9 @@ python -m aetron ask /path/to/project "where is login?"
 ```
 
 ```
-  ->  SEARCH login
+  ~   The map lists LoginController.cs; its outline will show the handler.
   ->  STRUCTURE Controllers/LoginController.cs
+  ~   LoginHandler is the one to read.
   ->  SOURCE Controllers/LoginController.cs LoginHandler
 
 Login is handled in Controllers/LoginController.cs, LoginHandler at line 18.
@@ -191,11 +203,36 @@ Login is handled in Controllers/LoginController.cs, LoginHandler at line 18.
   confidence 100% (4 of 4 checks passed)
   aetron source /path/to/project Controllers/LoginController.cs LoginController.LoginHandler
 
-(3 requests; source read from: Controllers/LoginController.cs)
+(2 requests, ~1900 tokens at medium effort; source read from: Controllers/LoginController.cs)
 ```
 
-The model never receives the repository. It searches, reads one file's shape,
-then asks for one definition — and the line it prints is one you can open.
+The model never receives the repository. It starts from a **map** of it - file
+names, the names of what they define, where the program starts, what it
+depends on, cut to a token budget - then reads one file's shape, then asks for
+one definition, and the line it prints is one you can open. The `~` lines are
+its reasons, which you can read.
+
+**How it keeps the token count down**, and where each idea came from:
+
+- *A map first, code last.* Like Aider's repo map: names only, ranked (entry
+  points, then what the rest of the project imports), grouped by folder so a
+  path is never repeated, and fitted to a budget. "+37 more files in Assets/"
+  says what was cut, and `FILES <folder>` or `SKIPPED` asks for it.
+- *Answer at about 75% sure.* A question the map already answers costs one
+  request: "What starts the program?" on a folder of scripts is ~600 tokens.
+- *Nothing is paid for twice.* A repeated request is refused with a pointer
+  to the result it already has; three refusals in a row end the question.
+- *Old results shrink.* Past a budget, earlier results are replaced by one
+  line each and the latest kept in full - the observation masking JetBrains
+  Research measured at half the cost of LLM-written summaries.
+- *The stable part first.* Instructions and map open every request unchanged,
+  so Ollama's cache (and Anthropic's prompt cache) reuse them.
+- *A summary, written once.* The agent's account of the project is stored in
+  `~/.aetron`, never in the project, and given to every later question.
+
+Measured on a folder shaped like a real one (three Python scripts and a Unity
+game): the first real model's trail cost 12 requests and ~6,800 tokens without
+an answer; the same question now takes 1-3 requests and ~600-1,950 tokens.
 
 The last two lines are Aetron's, not the model's. The sentence is prose and
 cannot be opened, so the answer is resolved back into one definition using only
@@ -217,10 +254,14 @@ ollama pull qwen2.5-coder       # about 4.7 GB; qwen2.5-coder:3b if RAM is tight
 python -m aetron ask /path/to/project "where are passwords hashed?"
 ```
 
-`--model` picks any other model you have pulled. Aetron asks Ollama for a
-16384-token context, so a long question does not silently lose its opening
-message, and caps each reply at 1024 tokens. On a laptop CPU a 7B model takes
-tens of seconds per step.
+`--model` picks any other model you have pulled, and `--effort low|medium|high`
+how much a question may spend: up to 6, 10 or 16 requests, a map of about 800,
+1,500 or 3,000 tokens, and - above low - a one-line reason per step. A
+reasoning model (qwen3, deepseek-r1, gpt-oss) thinks at medium and high and
+not at low, and its own thinking is shown instead. Aetron asks Ollama for a
+16384-token context, keeps the model loaded for 30 minutes between
+questions, and caps each reply. On a laptop CPU a 7B model takes tens of
+seconds per step.
 
 Whether a given local model follows Aetron's command language is something
 you can measure in a minute:
@@ -327,11 +368,13 @@ aetron/
 │   ├── search.py     level 1: rank files, with the reason for each
 │   ├── structure.py  level 2: one file's shape, no code
 │   ├── source.py     level 3: one definition's code
+│   ├── overview.py   the budgeted map a model starts from
 │   ├── insights.py   cycles, orphans, hubs
 │   ├── summary.py    what a newcomer reads first
 │   └── render.py     the summary as an English report, claims nothing extra
 ├── ai_providers/     local models and API models, behind one method
 ├── credentials.py    what an API key looks like, so none is sent or pushed
+├── project_notes.py  the project summary, kept in ~/.aetron between runs
 ├── ask.py            the model drives the levels, the rules are enforced
 │                     here, and the answer is resolved to one definition
 ├── web.py            the local server behind `aetron ui`

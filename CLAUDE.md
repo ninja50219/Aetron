@@ -22,8 +22,9 @@ Last verified 2026-09-23 by running the suite, not by reading this file.
           && echo "$b: contained in main" || echo "$b: HAS WORK MAIN LACKS"
   done
   ```
-- 585 tests pass and 4 skip in about 6 seconds; 579 pass and 10 skip without
-  `anthropic` (the usual Windows setup), 574 and 15 without `pathspec` too.
+- 663 tests pass and 4 skip in about 7 seconds; run the suite without
+  `anthropic` and without `pathspec` too (see CONTRIBUTING.md) - the usual
+  Windows setup has no `anthropic`.
   The 4 are `tests/test_ollama_live.py`, which runs only when
   `AETRON_OLLAMA_MODEL` names a pulled model.
 - The pipeline runs end to end in two places. `aetron ask <project> "where is
@@ -72,6 +73,9 @@ question                                       cost         who decides
 L0  index        scan + filter + parse          free        Aetron, once
    |             never sent to the model
    v
+map              names only, ranked, budgeted   800-3000    Aetron, once
+   |             (context/overview.py)          tokens      per question
+   v
 L1  search       ranked candidate files         ~2 lines    model picks
    |             with a match % and a reason    per candidate
    v
@@ -92,6 +96,16 @@ that is mostly signatures can have a JSON skeleton *larger* than itself.
 **L0 — index.** The existing `scan` and `analyze` stages. The symbol index and
 import graph are built once and held by Aetron. They are the thing that makes
 everything below cheap. They are never handed to a model.
+
+**The map.** Added on 2026-09-23, after the first real model - starting from
+two lines about the project - searched "main" eleven times. Before its first
+step the model gets a view of the index cut to a token budget: file names, the
+names of what they define, where the program starts (a `__main__` guard, a
+`Main` method, a Unity component, a Roblox server script), what it depends
+on, and "+N more files in X/" for whatever did not fit. Names, never code.
+Files the map names count as found, exactly as search results do. This is
+Aider's repo map and Anthropic's "lightweight identifiers, loaded just in
+time", applied to this protocol; the index itself still never leaves.
 
 **L1 — search.** The model sends a term: `login`. Aetron matches it against
 symbol names, qualified names, file stems and docstrings, and returns a ranked
@@ -134,7 +148,7 @@ Each citation carries a **confidence**, which is four checks and not an
 opinion:
 
 ```
-ranked   25   a search returned this file, and at what percentage
+ranked   25   a search returned this file (and at what %), or the map listed it
 outline  25   the file's outline lists this definition, at these lines
 read     30   the model read this definition before answering
 named    20   the answer names the file or the definition it points at
@@ -183,11 +197,12 @@ changing anything below.
 aetron/
 ├── scanner/      walk the tree, decide what counts as source      DONE
 ├── analyzer/     source -> symbols, imports, dead code            DONE (Python, C#, JS/TS, Lua)
-├── context/      the retrieval protocol, L1-L3, plus summary      DONE
+├── context/      the map, the retrieval protocol L1-L3, summary   DONE
 ├── ai_providers/ Ollama, Claude, and OpenAI-compatible (GPT,
 │                 Gemini), behind one method; keys from env only   DONE
 ├── credentials.py what a key looks like; the ask loop hides one
 │                 from the model, the suite refuses to push one    DONE
+├── project_notes.py the project summary, kept in ~/.aetron        DONE
 ├── ask.py        the model drives L1-L3, and the answer is
 │                 resolved to one definition; the only module
 │                 that knows both halves of Aetron                 DONE
@@ -203,7 +218,7 @@ aetron/
 Verified by running the suite and the tool against itself and against the
 standard library, not by reading the README.
 
-**Working and tested** (573 tests, ~6s):
+**Working and tested** (663 tests, ~7s):
 
 - `scanner/` — tree walk, four kinds of ignore rule anchored to detected
   project roots, `.gitignore` via `pathspec`, generated and minified detection,
@@ -212,7 +227,11 @@ standard library, not by reading the README.
   pattern, the first three by counting braces and Lua by counting `end`. Import resolution for both dotted modules and path-style
   specifiers, entry points, dead code graded high/medium/low.
 - `context/` — all three retrieval levels, plus `insights` and `summary`.
-- `ask.py` — the loop, the enforcement, and the citation that ends it.
+- `ask.py` — the loop, the enforcement, and the citation that ends it. Three
+  effort levels (requests, map budget, reason lines), `FILES` and `SKIPPED`,
+  a guard against repeated requests, a stop after three refusals in a row,
+  observation masking past a budget, follow-up questions carried as text, and
+  a token count on every answer.
 - `ai_providers/` — Ollama, Anthropic, and an OpenAI-compatible class serving
   `openai` and `gemini`, behind one `complete` method. The Ollama request shape
   is verified against a real daemon; the hosted ones against a loopback server
@@ -294,7 +313,14 @@ standard library, not by reading the README.
   class contains its methods and "line 7" is true of both. That is right for
   "where is movement" and wrong for a question whose answer really is the
   whole class; the outline is one click away for that case.
-- `ask` has met one real model once (qwen2.5-coder 7B, see above), and not
+- The map is re-sent with every request of a question. Ollama and Anthropic
+  cache it as a prefix, so it is paid for once in compute there; a hosted API
+  without prompt caching bills it each time. An effort's map budget is the
+  knob, and low effort's is 800 tokens.
+- A reason line (`THINK:`) is requested above low effort and never sent back
+  to the model; it exists for the reader. Whether a 7B model writes useful
+  ones is unmeasured.
+- `ask` has met one real model twice (qwen2.5-coder 7B, see above), and not
   yet end to end. Small models shorten paths - `PlayerMovment.cs` for
   `Assets/Scripts/PlayerMovment.cs` - so a file is resolved from what the
   model wrote when exactly one file it already found fits; two that fit are
@@ -464,13 +490,50 @@ with a test built from the model's trail:
 - The page showed a refusal only as a colour. It now says what the model was
   told, which is how the loop above would have been obvious at a glance.
 
+**Later still: the agent.** A second real run - "What starts the program?"
+on a folder of Python scripts - went `SEARCH startup`, then `SEARCH main`
+eleven times, each run again. The model had started from two lines about the
+project. The user asked for an agent that understands the repository cheaply,
+and research on how others do it (Aider's repo map; Anthropic's context
+engineering guidance; JetBrains Research's observation masking; how chat
+assistants show reasoning) shaped what landed:
+
+- `context/overview.py`: the map above. Fitted incrementally (the first
+  version re-rendered it per file, quadratic in the project), 10-34 ms on
+  the standard library, public names before private helpers.
+- `ask.py`, protocol v2: map and instructions first as a cacheable prefix,
+  the question last; `FILES`, `SKIPPED`; repeats refused with a pointer;
+  three refusals in a row stop the question; results shrink past a budget;
+  efforts; `THINK:` reasons; follow-ups; token counts; `summarize()`.
+- Ollama: `think` only for models whose `/api/show` lists "thinking" - sent
+  blind it is an HTTP 400, measured - off at low effort, a level for gpt-oss;
+  `message.thinking` shown; real token counts; `keep_alive` 30 minutes; a
+  preload on project open. A model that only thinks now says so. Tested
+  against the real daemon with probes built with `PARSER deepseek3`.
+- Anthropic: `output_config.effort`, summarized adaptive thinking, and
+  top-level `cache_control`, checked through the SDK over loopback.
+- The page: an "About this project" summary written once and stored in
+  `~/.aetron/summaries`; a conversation with each answer's thinking folded
+  under an icon; a model list from Ollama and an effort slider that says what
+  it spends; an explorer that opens on a file tree, important files first,
+  one-child folders compacted, outlines grouped into functions, types and
+  variables. The page may outline any indexed file - it is the owner's; the
+  model is still rationed in `ask.py`.
+- Found in the browser: the `ranked` check only passed for search results,
+  so a perfect walk from the map scored 75. The map now counts.
+
+Measured on a Projekty-shaped folder: the real trail cost 12 requests and
+~6,800 tokens with no answer; the same question now costs 1 request (~580
+tokens) from the map, or 3 (~1,950) reading `main` first.
+
 **What the next session should pick up:**
 
-1. **Ask the same question again with the same model**, and read the trail.
-   It is the first end-to-end run of a real model, and the thing most likely
-   to surface the next problem.
+1. **The same questions again with a real model**, end to end: "What starts
+   the program?" and "where is my movment script". The first runs any model
+   has made against the map.
 2. **A Java or Go parser**, as before.
-3. Reasoning models and `num_predict` - see the TODO in `ollama.py`.
+3. Whether a 7B model's `THINK:` lines are worth their tokens; if not, make
+   reasons a high-effort-only feature.
 
 ### 2026-09-14 — the redesign and the model, merged
 
