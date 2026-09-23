@@ -22,7 +22,7 @@ Last verified 2026-09-23 by running the suite, not by reading this file.
           && echo "$b: contained in main" || echo "$b: HAS WORK MAIN LACKS"
   done
   ```
-- 663 tests pass and 4 skip in about 7 seconds; run the suite without
+- 671 tests pass and 4 skip in about 7 seconds; run the suite without
   `anthropic` and without `pathspec` too (see CONTRIBUTING.md) - the usual
   Windows setup has no `anthropic`.
   The 4 are `tests/test_ollama_live.py`, which runs only when
@@ -35,8 +35,10 @@ Last verified 2026-09-23 by running the suite, not by reading this file.
   (see the session log), the user ran `qwen2.5-coder` (7B) through the page on
   Windows. Every reply was one well-formed command, no prose, no fences. It
   still never answered: it looped on a refusal that was Aetron's fault, not
-  the model's, and that is fixed. Whether it now reaches an answer end to end
-  has not been re-run. The measurement, for any pulled model:
+  the model's, and that is fixed. Its first automatic summary was right in
+  substance and wrong in format - plain prose, then a bare `ANSWER` - and
+  that is fixed too (see the session log). Whether it now reaches an answer
+  end to end has not been re-run. The measurement, for any pulled model:
 
   ```bash
   AETRON_OLLAMA_MODEL=qwen2.5-coder python -m pytest tests/test_ollama_live.py -v -s
@@ -218,7 +220,7 @@ aetron/
 Verified by running the suite and the tool against itself and against the
 standard library, not by reading the README.
 
-**Working and tested** (663 tests, ~7s):
+**Working and tested** (671 tests, ~7s):
 
 - `scanner/` — tree walk, four kinds of ignore rule anchored to detected
   project roots, `.gitignore` via `pathspec`, generated and minified detection,
@@ -526,11 +528,39 @@ Measured on a Projekty-shaped folder: the real trail cost 12 requests and
 ~6,800 tokens with no answer; the same question now costs 1 request (~580
 tokens) from the map, or 3 (~1,950) reading `main` first.
 
+**Then the first real summary.** The user opened the folder again and the
+page wrote its "About this project" card with qwen2.5-coder. It never
+arrived: 93 seconds, the card still empty. The trail showed the model had
+understood the project from the map alone and said so in its first reply -
+"This project seems to be a Unity-based application ... main script ...
+`PlayerMovment.cs`" - as plain text, with no `ANSWER` in front. Refused, it
+sent `ANSWER` alone, meaning "that"; refused again, it sent the prose again.
+Three things, all Aetron's:
+
+- The summary question said *begin with "This project seems to be"*, which
+  is more specific than the rule saying *answer with ANSWER*, and a 7B model
+  obeyed the more specific one. The question now shows the line it wants:
+  `Reply as: ANSWER This project seems to be ...`. The system prompt got
+  three example replies for the same reason.
+- Prose that reads as an answer (six words or more, not a plan such as
+  "let me check") is now taken as the answer when a summary was asked for,
+  or when a model sends it twice running; the first time elsewhere it is
+  refused with the exact line that would have worked. A bare `ANSWER`
+  straight after such prose answers with that prose. A plan is never taken.
+- The stop after three refusals only looked at refused commands, so a model
+  alternating a reply with no command and a bare `ANSWER` ran to the end of
+  its budget. It now runs after every refusal.
+
+The replayed trail takes one step and saves the summary; the page drove the
+same replay against the real daemon and filled the card at "≈799 tokens".
+The trail labels a reply with no command `NO COMMAND` rather than `RETRY`,
+which described what Aetron wanted rather than what the model sent.
+
 **What the next session should pick up:**
 
-1. **The same questions again with a real model**, end to end: "What starts
-   the program?" and "where is my movment script". The first runs any model
-   has made against the map.
+1. **The same questions again with a real model**, end to end: the summary,
+   "What starts the program?" and "where is my movment script". Only the
+   summary has met a real model against the map, and only before the fix.
 2. **A Java or Go parser**, as before.
 3. Whether a 7B model's `THINK:` lines are worth their tokens; if not, make
    reasons a high-effort-only feature.

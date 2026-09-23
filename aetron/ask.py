@@ -86,10 +86,14 @@ STUCK_AFTER = 3
 HISTORY_TURNS = 3
 HISTORY_ANSWER_CHARS = 400
 
+# "Begin with 'This project seems to be'" was the first wording, and the first
+# real model to write a summary did exactly that - as plain text, with no
+# ANSWER in front, because the question's instruction was more specific than
+# the rules'. The format now lives in the question too.
 SUMMARY_QUESTION = (
     "In two or three sentences, what is this project? Say what it is for, what "
-    "it is built with, and where it starts. Begin with \"This project seems "
-    "to be\". Read a file only if the map leaves you unsure."
+    "it is built with, and where it starts. Read a file only if the map leaves "
+    "you unsure. Reply as: ANSWER This project seems to be ..."
 )
 
 SEARCH_LIMIT = 8
@@ -143,6 +147,12 @@ How to work:
   it: "Login is handled in LoginController.cs, LoginHandler at line 68."
 - If the project does not contain what was asked about, say so. A wrong
   answer is worse than no answer.
+
+Example replies, one per turn:
+
+  STRUCTURE src/player/Movement.cs
+  SOURCE src/player/Movement.cs Movement.Update
+  ANSWER Movement is handled in src/player/Movement.cs, Movement.Update at line 12.
 """
 
 # Appended by effort. A reason costs a few tokens a turn and is what lets the
@@ -163,6 +173,26 @@ _COMMAND_RE = re.compile(
 _ALIASES = {"OUTLINE": "STRUCTURE"}
 
 _COMMANDS = "SEARCH, STRUCTURE, SOURCE, FILES, SKIPPED or ANSWER"
+
+# How a reply that is a plan rather than an answer begins. Prose is taken as an
+# answer when a model insists on it; a plan never is.
+_PLAN_RE = re.compile(
+    r"^(let me|let's|i will|i'll|i need|i should|i must|i am going|i'm going|"
+    r"first|next|to answer|we need|we should|now i)\b",
+    re.IGNORECASE,
+)
+
+
+def _prose(reply: str) -> str:
+    """A reply's text as an answer: fences and a THINK: label removed."""
+    text = re.sub(r"^```[\w]*\n?|```$", "", reply.strip(), flags=re.MULTILINE).strip()
+    text = re.sub(r"^(THINK|THOUGHT|REASON)\s*:\s*", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _answer_shaped(text: str) -> bool:
+    """Whether prose could be a final answer rather than a plan or a fragment."""
+    return len(text.split()) >= 6 and not _PLAN_RE.match(text)
 
 
 @dataclass
@@ -526,6 +556,8 @@ def ask(
     asked: dict[tuple[str, str], int] = {}
     reported = {"in": 0, "out": 0, "real": False}
 
+    last_prose = ""
+
     def record(step: Step) -> None:
         answer.steps.append(step)
         if on_step:
@@ -546,17 +578,40 @@ def ask(
         remaining = steps_allowed - used - 1
 
         if not command:
-            step = Step(
-                command="",
-                argument="",
-                observation=f"Reply with one command: {_COMMANDS}.",
-                refused=True,
-                thought=thought,
-            )
-            record(step)
-            messages.append(Message(role="assistant", content=_shortened(reply)))
-            messages.append(Message(role="user", content=_with_budget(step.observation, remaining)))
-            continue
+            text = _prose(reply)
+            # Found on the first real model to write a summary: it replied
+            # with the summary itself, plain, then with a bare ANSWER meaning
+            # "that". Prose is taken as the answer when prose was asked for,
+            # or when the model sends it a second time running; once, it is
+            # refused with the exact line that would have worked.
+            insisted = bool(answer.steps) and answer.steps[-1].command == "" and answer.steps[-1].refused
+            if _answer_shaped(text) and (question == SUMMARY_QUESTION or insisted):
+                command, argument = "ANSWER", text
+                last_prose = ""
+                # The reply was the answer, not a reason for one.
+                thought = (getattr(provider, "last_thinking", "") or "").strip()
+            else:
+                last_prose = text if _answer_shaped(text) else ""
+                opening = " ".join(text.split()[:8])
+                hint = f" If that was your answer, send it as: ANSWER {opening} ..." if last_prose else ""
+                step = Step(
+                    command="",
+                    argument="",
+                    observation=f"Reply with one command: {_COMMANDS}.{hint}",
+                    refused=True,
+                    thought=thought,
+                )
+                record(step)
+                messages.append(Message(role="assistant", content=_shortened(reply)))
+                messages.append(Message(role="user", content=_with_budget(step.observation, remaining)))
+                if _stuck(answer, reported):
+                    return answer
+                continue
+
+        if command == "ANSWER" and not argument.strip() and last_prose:
+            # "ANSWER" alone, straight after an answer written without it: the
+            # model is pointing at what it just said.
+            argument = last_prose
 
         if command == "ANSWER" and not argument.strip():
             # A bare ANSWER would end the loop with nothing to show and no
@@ -564,13 +619,15 @@ def ask(
             step = Step(
                 command="ANSWER",
                 argument="",
-                observation="ANSWER needs the answer after it.",
+                observation="ANSWER needs the answer after it, on the same line.",
                 refused=True,
                 thought=thought,
             )
             record(step)
             messages.append(Message(role="assistant", content="ANSWER"))
             messages.append(Message(role="user", content=step.observation))
+            if _stuck(answer, reported):
+                return answer
             continue
 
         if command == "ANSWER":
@@ -617,14 +674,7 @@ def ask(
         messages.append(Message(role="user", content=_with_budget(observation, remaining)))
         observed.append(len(messages) - 1)
 
-        recent = answer.steps[-STUCK_AFTER:]
-        if len(recent) == STUCK_AFTER and all(step.refused for step in recent):
-            answer.incomplete = (
-                f"The model was refused {STUCK_AFTER} times in a row and was stopped "
-                "early rather than spend more tokens. A larger model, or a higher "
-                "effort, usually gets further."
-            )
-            _account(answer, reported)
+        if _stuck(answer, reported):
             return answer
 
     answer.incomplete = (
@@ -632,6 +682,26 @@ def ask(
     )
     _account(answer, reported)
     return answer
+
+
+def _stuck(answer: Answer, reported: dict) -> bool:
+    """End the question when the last few steps were all refused.
+
+    Checked after every refusal, not only a refused command: the first real
+    summary alternated between a reply with no command and a bare ANSWER,
+    which the first version of this check never looked at, and ran to the
+    end of its budget.
+    """
+    recent = answer.steps[-STUCK_AFTER:]
+    if len(recent) == STUCK_AFTER and all(step.refused for step in recent):
+        answer.incomplete = (
+            f"The model was refused {STUCK_AFTER} times in a row and was stopped "
+            "early rather than spend more tokens. A larger model, or a higher "
+            "effort, usually gets further."
+        )
+        _account(answer, reported)
+        return True
+    return False
 
 
 def summarize(

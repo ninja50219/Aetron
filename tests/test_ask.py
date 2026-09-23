@@ -845,3 +845,72 @@ class TestALostModelIsStoppedEarly:
         )
         answer = ask(model, scan_result, analysis, "q")
         assert answer.text == "auth/login.py line 2"
+
+
+REAL_SUMMARY = (
+    "This project seems to be a Unity-based application for Minecraft, likely designed to "
+    "enhance gameplay through automation and customization. It is built with C# and Python, "
+    "with the main script starting at `myminecraft/Assets/Scripts/PlayerMovment.cs`."
+)
+
+
+class TestTheFirstRealSummary:
+    """qwen2.5-coder 7B, the page's automatic summary, on the user's machine:
+    it understood the project from the map and wrote a good summary - as
+    plain text, then a bare ANSWER, then the plain text again, refused each
+    time, until its budget ran out."""
+
+    def test_plain_prose_is_the_summary(self, project):
+        from aetron.ask import summarize
+
+        scan_result, analysis = project(SCRIPTS)
+        answer = summarize(Scripted(REAL_SUMMARY), scan_result, analysis)
+        assert answer.text == REAL_SUMMARY
+        assert len(answer.steps) == 1 and not answer.steps[0].refused
+        assert answer.steps[0].thought == ""
+
+    def test_the_questions_own_wording_asks_for_answer(self):
+        from aetron.ask import SUMMARY_QUESTION
+
+        assert "Reply as: ANSWER This project seems to be" in SUMMARY_QUESTION
+
+    def test_a_bare_answer_after_prose_means_that_prose(self, project):
+        """The real trail on an ordinary question: prose, then ANSWER alone."""
+        scan_result, analysis = project(SCRIPTS)
+        answer = ask(Scripted("APPopen.py starts it: main runs when the file is executed.", "ANSWER"),
+                     scan_result, analysis, "What starts the program?")
+        assert answer.text == "APPopen.py starts it: main runs when the file is executed."
+        assert [s.refused for s in answer.steps] == [True, False]
+
+    def test_prose_once_is_refused_with_the_line_that_would_work(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        answer = ask(Scripted("APPopen.py starts it: main runs when the file is executed.", "ANSWER done"),
+                     scan_result, analysis, "What starts the program?")
+        assert "send it as: ANSWER APPopen.py starts it: main runs when the" in answer.steps[0].observation
+
+    def test_prose_sent_twice_is_taken_as_the_answer(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        prose = "APPopen.py starts it: main runs when the file is executed."
+        answer = ask(Scripted(prose, prose), scan_result, analysis, "What starts the program?")
+        assert answer.text == prose
+
+    def test_a_plan_is_never_taken_as_an_answer(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        plan = "Let me look at the structure of APPopen.py to find the entry point."
+        answer = ask(Scripted(plan, plan, plan), scan_result, analysis, "What starts the program?")
+        assert answer.text == ""
+        assert "refused 3 times in a row" in answer.incomplete
+
+    def test_three_refusals_of_any_kind_stop_the_question(self, project):
+        """The first stop only counted refused commands; the real summary's
+        refusals were for replies with no command and a bare ANSWER."""
+        scan_result, analysis = project(SCRIPTS)
+        answer = ask(Scripted("hmm", "ANSWER", "hmm", "ANSWER", "hmm"), scan_result, analysis, "q", max_steps=10)
+        assert len(answer.steps) == 3
+        assert "refused 3 times in a row" in answer.incomplete
+
+    def test_the_rules_show_example_replies(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        model = Recording("ANSWER x")
+        ask(model, scan_result, analysis, "q")
+        assert "ANSWER Movement is handled in src/player/Movement.cs" in model.calls[0][0]

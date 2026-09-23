@@ -496,7 +496,7 @@ function renderTurn(turn, running) {
     // for twelve requests, and the page never said what it was being told.
     if (step.refused && step.note) text.append(node('em', `Refused: ${step.note}`, 'trail-note'));
     if (step.thought) text.append(node('span', step.thought, 'step-thought'));
-    row.append(node('b', STEP_LABEL[step.command] || 'RETRY'), text);
+    row.append(node('b', STEP_LABEL[step.command] || 'NO COMMAND'), text);
     turn.trail.append(row);
   }
   if (running) {
