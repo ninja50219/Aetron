@@ -27,6 +27,7 @@ the score toward 1.0 without ever arriving.
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 from aetron.analyzer.analyzer import AnalysisResult
 from aetron.analyzer.symbols import SymbolKind
@@ -61,6 +62,14 @@ WEIGHTS = {
     # return socketserver.py at all, which is the one file it should have
     # returned first.
     "file_partial": 0.35,
+    # The code misspells what the question spells right, or the other way
+    # round. Found on a real project: the question was "where is my movment
+    # script", the model corrected it to "movement", and the file was
+    # PlayerMovment.cs - so nothing matched at all. A model cannot know a
+    # project's typos; the index can. Below every exact rule, so a name spelled
+    # the way it was asked always outranks one spelled nearly that way.
+    "symbol_spelling": 0.40,
+    "file_spelling": 0.33,
     "path_word": 0.30,
     "symbol_partial": 0.20,
     "docstring": 0.15,
@@ -144,6 +153,40 @@ class Candidate:
             if match.line:
                 return match.line
         return 0
+
+
+# The shortest word a spelling slip is allowed in. Below this, one letter is
+# too much of the word: "login" and "logic" differ by one, and are unrelated.
+SPELLING_MIN = 5
+
+
+# Cached because the same few thousand words recur across every definition in
+# a project, and called only for words within a letter of the term's length.
+# Unguarded and uncached, the check made a search of the standard library 20%
+# slower; guarded and cached, about 10%.
+@lru_cache(maxsize=65536)
+def _one_slip(term: str, word: str) -> bool:
+    """True when ``word`` is ``term`` with one letter dropped, one added, or
+    two neighbouring letters swapped - the slips people actually make.
+
+    A changed letter is deliberately not one of them. Substitutions are where
+    real words collide - login and logic, model and modal - while a dropped or
+    doubled letter almost never turns one word into another.
+    """
+    if term == word or min(len(term), len(word)) < SPELLING_MIN:
+        return False
+    if len(term) == len(word):
+        diffs = [i for i, (a, b) in enumerate(zip(term, word)) if a != b]
+        return (
+            len(diffs) == 2
+            and diffs[1] == diffs[0] + 1
+            and term[diffs[0]] == word[diffs[1]]
+            and term[diffs[1]] == word[diffs[0]]
+        )
+    if abs(len(term) - len(word)) != 1:
+        return False
+    short, long = sorted((term, word), key=len)
+    return any(long[:i] + long[i + 1 :] == short for i in range(len(long)))
 
 
 def words(identifier: str) -> list[str]:
@@ -276,6 +319,14 @@ def _score_symbols(
                     evidence.add(
                         file_symbols.rel_path, "symbol_partial", detail, term, symbol.line
                     )
+                elif any(abs(len(word) - len(term)) <= 1 and _one_slip(term, word) for word in name_words):
+                    evidence.add(
+                        file_symbols.rel_path,
+                        "symbol_spelling",
+                        f"{detail} (near spelling of {term})",
+                        term,
+                        symbol.line,
+                    )
                 elif term in docstring_words:
                     evidence.add(
                         file_symbols.rel_path,
@@ -352,9 +403,23 @@ def _score_paths(
                 evidence.add(
                     file_info.rel_path, "file_partial", f"file name {filename}", term
                 )
+            elif any(abs(len(word) - len(term)) <= 1 and _one_slip(term, word) for word in stem_words):
+                evidence.add(
+                    file_info.rel_path,
+                    "file_spelling",
+                    f"file name {filename} (near spelling of {term})",
+                    term,
+                )
             else:
+                # "script" asks about a Scripts folder as surely as "scripts"
+                # does, so a folder takes a one-letter slip too.
                 folder = next(
-                    (d for d in directories if term in words(d)), None
+                    (
+                        d for d in directories
+                        if term in words(d)
+                        or any(abs(len(word) - len(term)) <= 1 and _one_slip(term, word) for word in words(d))
+                    ),
+                    None,
                 )
                 if folder is not None:
                     evidence.add(
