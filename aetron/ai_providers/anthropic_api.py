@@ -31,6 +31,17 @@ FALLBACK_MODELS = frozenset(
     {"claude-opus-5", "claude-opus-5-5", "claude-fable-5", "claude-fable-5-1"}
 )
 
+# Models that take an effort level and adaptive thinking whose summary can be
+# shown. Per the Claude API documentation Haiku 4.5 rejects effort, so a model
+# not listed here is asked plainly rather than risking a 400.
+EFFORT_MODELS = frozenset(
+    {
+        "claude-opus-5", "claude-opus-5-5", "claude-fable-5", "claude-fable-5-1",
+        "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+        "claude-sonnet-4-6",
+    }
+)
+
 NO_CREDENTIALS = (
     "Anthropic needs an API key, and none was found. Set ANTHROPIC_API_KEY in "
     "your shell before starting Aetron - Windows: setx ANTHROPIC_API_KEY "
@@ -43,7 +54,9 @@ NO_CREDENTIALS = (
 class AnthropicProvider(Provider):
     name = "anthropic"
 
-    def __init__(self, model: str = DEFAULT_MODEL, api_key: str | None = None) -> None:
+    def __init__(
+        self, model: str = DEFAULT_MODEL, api_key: str | None = None, effort: str = "medium"
+    ) -> None:
         try:
             import anthropic
         except ImportError as exc:
@@ -53,7 +66,11 @@ class AnthropicProvider(Provider):
             ) from exc
 
         self.model = model
+        self.effort = effort if effort in ("low", "medium", "high") else "medium"
         self._anthropic = anthropic
+        # Read by ask() after each reply, as for every provider.
+        self.last_thinking = ""
+        self.last_usage: tuple[int | None, int | None] = (None, None)
 
         try:
             # With no key argument the SDK resolves ANTHROPIC_API_KEY, then
@@ -72,7 +89,16 @@ class AnthropicProvider(Provider):
             "max_tokens": MAX_TOKENS,
             "system": system,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
+            # The instructions and the project map open every request of a
+            # question unchanged, which is what a prompt cache is for: each
+            # request after the first reads them at a tenth of the price.
+            "cache_control": {"type": "ephemeral"},
         }
+        if self.model in EFFORT_MODELS:
+            arguments["output_config"] = {"effort": self.effort}
+            # "summarized" so the thinking can be read on the page; the
+            # default on these models returns it empty.
+            arguments["thinking"] = {"type": "adaptive", "display": "summarized"}
         if self.model in FALLBACK_MODELS:
             arguments["betas"] = [FALLBACK_BETA]
             arguments["fallbacks"] = "default"
@@ -115,6 +141,16 @@ class AnthropicProvider(Provider):
 
         if response.stop_reason == "refusal":
             raise ProviderError("The model declined to answer this question.")
+
+        usage = getattr(response, "usage", None)
+        self.last_usage = (
+            (getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None))
+            if usage is not None else (None, None)
+        )
+        self.last_thinking = " ".join(
+            block.thinking for block in response.content
+            if getattr(block, "type", "") == "thinking" and getattr(block, "thinking", "")
+        ).strip()
 
         # content is a list of blocks - thinking, text, and a fallback marker
         # when another model took over; only the text ones are the reply.

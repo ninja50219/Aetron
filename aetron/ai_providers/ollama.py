@@ -35,8 +35,9 @@ TIMEOUT_SECONDS = 300
 # gave a model 4096 tokens unless asked, and when a conversation outgrew that
 # it silently dropped the oldest messages while keeping the system prompt. The
 # oldest message is the one that carries the question, so the model went on
-# searching for something it could no longer see. Measured on this repository, an eight-request walk peaks near 5600 tokens and twelve
-# requests reach roughly twice that; 16384 covers MAX_STEPS with room to spare.
+# searching for something it could no longer see. Measured on this repository,
+# an eight-request walk peaks near 5600 tokens and twelve requests reach
+# roughly twice that; 16384 covers MAX_STEPS with room to spare.
 # The cost is memory: about 0.9 GB of cache for a 7B model, allocated when the
 # model loads.
 NUM_CTX = 16384
@@ -49,12 +50,21 @@ NUM_CTX = 16384
 # the command is looked for on every line.
 MAX_TOKENS = 1024
 
-# TODO: reasoning models (qwen3, deepseek-r1) write their thinking before the
-# command, and 1024 tokens may cut them off mid-thought, which comes back as an
-# empty message. None could be pulled in the environment this was written in.
-# Recommendation: if one returns empty replies here, send "think": false in the
-# payload rather than raising MAX_TOKENS - the protocol asks for one command per
-# turn, and minutes of reasoning per SEARCH on a CPU defeats the point.
+# A reasoning model's thinking counts against the same ceiling as its reply,
+# so a model allowed to think is allowed more. Low effort does not think at all:
+# the protocol asks for one command per turn, and minutes of reasoning per
+# SEARCH on a laptop CPU is the opposite of what low effort asks for.
+THINKING_TOKENS = {"low": MAX_TOKENS, "medium": 4096, "high": 8192}
+
+# How long Ollama keeps the model loaded after a request. Its default is five
+# minutes; a person reading an answer and asking the next question often takes
+# longer, and reloading gigabytes of weights is the slowest thing that can
+# happen between two questions.
+KEEP_ALIVE = "30m"
+
+# Asked of the daemon when a model's capabilities are needed. Short, because
+# it runs before the first question and a missing daemon should not stall it.
+SHOW_TIMEOUT_SECONDS = 10
 
 
 class OllamaProvider(Provider):
@@ -66,11 +76,44 @@ class OllamaProvider(Provider):
         host: str = DEFAULT_HOST,
         num_ctx: int = NUM_CTX,
         timeout: float = TIMEOUT_SECONDS,
+        effort: str = "medium",
     ) -> None:
         self.model = model
         self.host = host.rstrip("/")
         self.num_ctx = num_ctx
         self.timeout = timeout
+        self.effort = effort if effort in THINKING_TOKENS else "medium"
+        # Read by ask() after each reply: the model's own reasoning, and what
+        # the request really cost, as Ollama counted it.
+        self.last_thinking = ""
+        self.last_usage: tuple[int | None, int | None] = (None, None)
+        self._capabilities: set[str] | None = None
+        self._family = ""
+
+    def capabilities(self) -> set[str]:
+        """What the daemon says this model can do, asked once.
+
+        Measured on Ollama 0.34.3: "think" sent to a model without the
+        "thinking" capability is refused outright - HTTP 400, "does not
+        support thinking" - so a request must never carry it blind. When the
+        daemon cannot be asked, the answer is "nothing special", and the
+        request goes out without it.
+        """
+        if self._capabilities is None:
+            info = _post(self.host, "/api/show", {"model": self.model}, SHOW_TIMEOUT_SECONDS)
+            self._capabilities = set((info or {}).get("capabilities") or [])
+            self._family = ((info or {}).get("details") or {}).get("family", "")
+        return self._capabilities
+
+    def _think(self):
+        """The "think" value to send, or None to send nothing."""
+        if "thinking" not in self.capabilities():
+            return None
+        # gpt-oss takes a level and nothing else; every other thinking model
+        # takes on or off.
+        if self._family == "gptoss" or self.model.startswith("gpt-oss"):
+            return self.effort
+        return self.effort != "low"
 
     def payload(self, system: str, messages: list[Message]) -> dict:
         """The body of one /api/chat request.
@@ -83,19 +126,24 @@ class OllamaProvider(Provider):
         local model Aetron had driven until then had never seen the command
         language it was being asked to write.
         """
-        return {
+        think = self._think()
+        payload = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}]
             + [{"role": m.role, "content": m.content} for m in messages],
             "stream": False,
+            "keep_alive": KEEP_ALIVE,
             "options": {
                 # The protocol wants one command per turn, chosen deliberately.
                 # Sampling that wanders produces commands that do not parse.
                 "temperature": 0.1,
                 "num_ctx": self.num_ctx,
-                "num_predict": MAX_TOKENS,
+                "num_predict": THINKING_TOKENS[self.effort] if think else MAX_TOKENS,
             },
         }
+        if think is not None:
+            payload["think"] = think
+        return payload
 
     def complete(self, system: str, messages: list[Message]) -> str:
         request = urllib.request.Request(
@@ -144,11 +192,80 @@ class OllamaProvider(Provider):
         except json.JSONDecodeError as exc:
             raise ProviderError("Ollama returned something that was not JSON.") from exc
 
-        content = body.get("message", {}).get("content")
+        message = body.get("message", {})
+        self.last_thinking = (message.get("thinking") or "").strip()
+        self.last_usage = (body.get("prompt_eval_count"), body.get("eval_count"))
+
+        content = message.get("content")
         if not content:
+            if self.last_thinking and body.get("done_reason") == "length":
+                raise ProviderError(
+                    f"{self.model} spent its whole reply thinking and never answered. "
+                    "Try a lower effort, which thinks less or not at all."
+                )
             raise ProviderError("Ollama returned an empty message.")
 
         return content
+
+    def preload(self) -> bool:
+        """Load the model now, so the first question does not wait for it.
+
+        An empty chat request loads the weights and returns ("done_reason":
+        "load", measured) without generating anything, so it costs nothing.
+        """
+        reply = _post(
+            self.host, "/api/chat",
+            {"model": self.model, "messages": [], "keep_alive": KEEP_ALIVE},
+            self.timeout,
+        )
+        return bool(reply) and reply.get("done_reason") == "load"
+
+
+def list_models(host: str = DEFAULT_HOST) -> list[dict] | None:
+    """The models pulled into this Ollama, or None when it cannot be reached.
+
+    Each entry carries the name, the size on disk, the parameter count and
+    what the model can do - "thinking" among them for a reasoning model, which
+    is how the page knows whose thinking it can show.
+    """
+    body = _get(host, "/api/tags", SHOW_TIMEOUT_SECONDS)
+    if body is None:
+        return None
+    models = []
+    for entry in body.get("models") or []:
+        details = entry.get("details") or {}
+        models.append(
+            {
+                "name": entry.get("name", ""),
+                "size": entry.get("size", 0),
+                "parameters": details.get("parameter_size", ""),
+                "family": details.get("family", ""),
+                "capabilities": entry.get("capabilities") or [],
+            }
+        )
+    return sorted(models, key=lambda m: m["name"])
+
+
+def _get(host: str, path: str, timeout: float) -> dict | None:
+    try:
+        with urllib.request.urlopen(f"{host.rstrip('/')}{path}", timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _post(host: str, path: str, body: dict, timeout: float) -> dict | None:
+    request = urllib.request.Request(
+        f"{host.rstrip('/')}{path}",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def _error_text(exc: urllib.error.HTTPError) -> str:

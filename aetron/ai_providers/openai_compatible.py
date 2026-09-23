@@ -65,7 +65,17 @@ class OpenAICompatibleProvider(Provider):
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = TIMEOUT_SECONDS,
+        effort: str = "medium",
     ) -> None:
+        # TODO: effort is accepted and not sent. OpenAI's reasoning models take
+        # "reasoning_effort", and its other models - and several compatible
+        # servers - reject the field outright, which cannot be told apart
+        # without a key to test against. Recommendation: send it only for
+        # model names the provider documents as reasoning models, and test
+        # against the live API before adding any.
+        self.effort = effort
+        self.last_thinking = ""
+        self.last_usage: tuple[int | None, int | None] = (None, None)
         if name not in ENDPOINTS:
             raise ProviderError(f"No endpoint is defined for {name!r}.")
         endpoint = ENDPOINTS[name]
@@ -139,6 +149,14 @@ class OpenAICompatibleProvider(Provider):
             message = body["choices"][0]["message"]
         except (KeyError, IndexError, TypeError):
             raise ProviderError(f"{self.label} returned a reply with no message in it.") from None
+
+        usage = body.get("usage") or {}
+        self.last_usage = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+        # Not part of OpenAI's API, but how DeepSeek, vLLM and LM Studio return
+        # a reasoning model's thinking through the same endpoint.
+        self.last_thinking = str(
+            message.get("reasoning_content") or message.get("reasoning") or ""
+        ).strip()
 
         content = message.get("content")
         if not content and message.get("refusal"):

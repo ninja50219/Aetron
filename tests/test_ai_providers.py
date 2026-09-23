@@ -530,3 +530,225 @@ class TestAnthropic:
             AnthropicProvider().complete("s", [Message("user", "q")])
         assert "ANTHROPIC_API_KEY" in str(caught.value)
         assert "ant auth login" in str(caught.value)
+
+
+class _Daemon:
+    """A urlopen stand-in that answers each Ollama endpoint differently."""
+
+    def __init__(self, capabilities=(), family="qwen2", chat=None, tags=None):
+        self.capabilities = list(capabilities)
+        self.family = family
+        self.chat = chat or {"message": {"content": "SEARCH login"}, "prompt_eval_count": 120, "eval_count": 4}
+        self.tags = tags
+        self.sent = []
+
+    def __call__(self, request, timeout=None):
+        url = request if isinstance(request, str) else request.full_url
+        body = json.loads(request.data) if not isinstance(request, str) and request.data else None
+        self.sent.append((url, body))
+        if url.endswith("/api/show"):
+            reply = {"capabilities": self.capabilities, "details": {"family": self.family}}
+        elif url.endswith("/api/tags"):
+            reply = self.tags
+        else:
+            reply = self.chat
+        return _Raw(reply)
+
+
+class _Raw:
+    def __init__(self, reply):
+        self.body = json.dumps(reply).encode()
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class TestThinkingAndEffort:
+    """Measured on Ollama 0.34.3 with probe models: "think" sent to a model
+    without the thinking capability is an HTTP 400; "think": false is accepted
+    by any model; a thinking model that never stops thinking returns an empty
+    content with all its output under message.thinking."""
+
+    def _chat_body(self, daemon):
+        return next(body for url, body in daemon.sent if url.endswith("/api/chat"))
+
+    def test_think_is_never_sent_to_a_model_that_cannot(self, monkeypatch):
+        daemon = _Daemon(capabilities=["completion"])
+        monkeypatch.setattr("urllib.request.urlopen", daemon)
+        OllamaProvider(effort="high").complete("s", [Message("user", "q")])
+        assert "think" not in self._chat_body(daemon)
+
+    def test_a_thinking_model_thinks_except_at_low_effort(self, monkeypatch):
+        for effort, expected, budget in (("low", False, 1024), ("medium", True, 4096), ("high", True, 8192)):
+            daemon = _Daemon(capabilities=["completion", "thinking"])
+            monkeypatch.setattr("urllib.request.urlopen", daemon)
+            OllamaProvider(model="qwen3", effort=effort).complete("s", [Message("user", "q")])
+            body = self._chat_body(daemon)
+            assert body["think"] is expected
+            assert body["options"]["num_predict"] == budget
+
+    def test_gpt_oss_gets_a_level_not_a_switch(self, monkeypatch):
+        daemon = _Daemon(capabilities=["completion", "thinking"], family="gptoss")
+        monkeypatch.setattr("urllib.request.urlopen", daemon)
+        OllamaProvider(model="gpt-oss:20b", effort="high").complete("s", [Message("user", "q")])
+        assert self._chat_body(daemon)["think"] == "high"
+
+    def test_the_capabilities_are_asked_once(self, monkeypatch):
+        daemon = _Daemon(capabilities=["completion", "thinking"])
+        monkeypatch.setattr("urllib.request.urlopen", daemon)
+        provider = OllamaProvider()
+        for _ in range(3):
+            provider.complete("s", [Message("user", "q")])
+        assert sum(url.endswith("/api/show") for url, _ in daemon.sent) == 1
+
+    def test_the_model_stays_loaded_between_questions(self, monkeypatch):
+        daemon = _Daemon()
+        monkeypatch.setattr("urllib.request.urlopen", daemon)
+        OllamaProvider().complete("s", [Message("user", "q")])
+        assert self._chat_body(daemon)["keep_alive"] == "30m"
+
+    def test_thinking_and_real_token_counts_are_kept(self, monkeypatch):
+        daemon = _Daemon(
+            capabilities=["completion", "thinking"],
+            chat={"message": {"content": "SEARCH x", "thinking": "The map shows a script."},
+                  "prompt_eval_count": 812, "eval_count": 37},
+        )
+        monkeypatch.setattr("urllib.request.urlopen", daemon)
+        provider = OllamaProvider()
+        assert provider.complete("s", [Message("user", "q")]) == "SEARCH x"
+        assert provider.last_thinking == "The map shows a script."
+        assert provider.last_usage == (812, 37)
+
+    def test_a_model_that_only_thought_says_so(self, monkeypatch):
+        daemon = _Daemon(
+            capabilities=["completion", "thinking"],
+            chat={"message": {"content": "", "thinking": "hmm " * 1000}, "done_reason": "length"},
+        )
+        monkeypatch.setattr("urllib.request.urlopen", daemon)
+        with pytest.raises(ProviderError, match="spent its whole reply thinking"):
+            OllamaProvider().complete("s", [Message("user", "q")])
+
+    def test_an_unreachable_daemon_means_no_thinking_not_a_crash(self, monkeypatch):
+        calls = []
+
+        def only_chat(request, timeout=None):
+            calls.append(request.full_url)
+            if request.full_url.endswith("/api/show"):
+                raise urllib.error.URLError("refused")
+            return _Raw({"message": {"content": "SEARCH x"}})
+
+        monkeypatch.setattr("urllib.request.urlopen", only_chat)
+        provider = OllamaProvider()
+        assert provider.complete("s", [Message("user", "q")]) == "SEARCH x"
+        assert provider.capabilities() == set()
+
+
+class TestInstalledModels:
+    def test_the_pulled_models_are_listed_with_what_they_can_do(self, monkeypatch):
+        from aetron.ai_providers.ollama import list_models
+
+        tags = {"models": [
+            {"name": "qwen3:8b", "size": 5_200_000_000, "details": {"parameter_size": "8.2B", "family": "qwen3"},
+             "capabilities": ["completion", "tools", "thinking"]},
+            {"name": "qwen2.5-coder:latest", "size": 4_700_000_000, "details": {"parameter_size": "7.6B"},
+             "capabilities": ["completion", "tools"]},
+        ]}
+        monkeypatch.setattr("urllib.request.urlopen", _Daemon(tags=tags))
+        models = list_models()
+        assert [m["name"] for m in models] == ["qwen2.5-coder:latest", "qwen3:8b"]
+        assert "thinking" in models[1]["capabilities"]
+        assert models[1]["parameters"] == "8.2B"
+
+    def test_no_daemon_is_none_not_an_empty_list(self, monkeypatch):
+        """None means "could not ask"; [] means "asked, and nothing is pulled"."""
+        from aetron.ai_providers.ollama import list_models
+
+        def refuse(*args, **kwargs):
+            raise urllib.error.URLError("refused")
+
+        monkeypatch.setattr("urllib.request.urlopen", refuse)
+        assert list_models() is None
+
+    def test_preloading_loads_without_generating(self, monkeypatch):
+        daemon = _Daemon(chat={"model": "m", "message": {"content": ""}, "done": True, "done_reason": "load"})
+        monkeypatch.setattr("urllib.request.urlopen", daemon)
+        assert OllamaProvider().preload()
+        assert _chat_body_of(daemon)["messages"] == []
+
+
+def _chat_body_of(daemon):
+    return next(body for url, body in daemon.sent if url.endswith("/api/chat"))
+
+
+class TestAnthropicEffortAndThinking:
+    """Through the real SDK against the loopback server, like TestAnthropic."""
+
+    @pytest.fixture
+    def anthropic_at(self, server, monkeypatch):
+        pytest.importorskip("anthropic")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", server.url)
+        return server
+
+    def _reply(self, thinking="", model="claude-opus-5"):
+        return {
+            "id": "msg_test", "type": "message", "role": "assistant", "model": model,
+            "content": [
+                {"type": "thinking", "thinking": thinking, "signature": "sig"},
+                {"type": "text", "text": "SEARCH login"},
+            ],
+            "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 1520, "output_tokens": 42},
+        }
+
+    def test_effort_and_readable_thinking_are_asked_for(self, anthropic_at):
+        from aetron.ai_providers.anthropic_api import AnthropicProvider
+
+        anthropic_at.replies.append((200, self._reply()))
+        AnthropicProvider(api_key=FAKE_KEY, effort="high").complete("s", [Message("user", "q")])
+        body = anthropic_at.requests[0]["body"]
+        assert body["output_config"] == {"effort": "high"}
+        assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+
+    def test_the_stable_prefix_is_marked_for_caching(self, anthropic_at):
+        from aetron.ai_providers.anthropic_api import AnthropicProvider
+
+        anthropic_at.replies.append((200, self._reply()))
+        AnthropicProvider(api_key=FAKE_KEY).complete("s", [Message("user", "q")])
+        assert anthropic_at.requests[0]["body"]["cache_control"] == {"type": "ephemeral"}
+
+    def test_a_model_without_effort_is_asked_plainly(self, anthropic_at):
+        from aetron.ai_providers.anthropic_api import AnthropicProvider
+
+        anthropic_at.replies.append((200, self._reply(model="claude-haiku-4-5")))
+        AnthropicProvider(model="claude-haiku-4-5", api_key=FAKE_KEY).complete("s", [Message("user", "q")])
+        body = anthropic_at.requests[0]["body"]
+        assert "output_config" not in body and "thinking" not in body
+
+    def test_the_thinking_summary_and_real_counts_are_kept(self, anthropic_at):
+        from aetron.ai_providers.anthropic_api import AnthropicProvider
+
+        anthropic_at.replies.append((200, self._reply(thinking="The map names LoginController.")))
+        provider = AnthropicProvider(api_key=FAKE_KEY)
+        provider.complete("s", [Message("user", "q")])
+        assert provider.last_thinking == "The map names LoginController."
+        assert provider.last_usage == (1520, 42)
+
+
+class TestOpenAICompatibleCounts:
+    def test_usage_and_a_servers_reasoning_are_kept(self, server):
+        from aetron.ai_providers.openai_compatible import OpenAICompatibleProvider
+
+        server.replies.append((200, {
+            "choices": [{"message": {"content": "SEARCH x", "reasoning_content": "Check the map first."}}],
+            "usage": {"prompt_tokens": 900, "completion_tokens": 12},
+        }))
+        provider = OpenAICompatibleProvider("openai", model="m", api_key=FAKE_KEY, base_url=server.url)
+        provider.complete("s", [Message("user", "q")])
+        assert provider.last_usage == (900, 12)
+        assert provider.last_thinking == "Check the map first."
