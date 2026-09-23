@@ -73,7 +73,7 @@ function availability() {
   // A question in flight holds the index it started with, so a rescan would be
   // refused by the server anyway. Saying so with a disabled button beats an
   // error banner for something the page already knew.
-  for (const id of ['question','askButton','provider','model']) $(id).disabled = !state.root || busy || asking;
+  for (const id of ['question','askButton','provider','model','modelSelect','effort','newConversation','summarizeButton']) $(id).disabled = !state.root || busy || asking;
   if (asking) $('refresh').disabled = true;
   $('languageFilter').disabled = !candidates.length || busy;
   $('copyCode').disabled = !source?.text || busy;
@@ -113,6 +113,7 @@ function view(name) {
     else $(id + 'Tab').removeAttribute('aria-current');
   }
   $('pageName').textContent = {ask:'Ask Aetron',explorer:'Code explorer',overview:'Overview',omitted:'Excluded files'}[name];
+  if (name === 'explorer' && state.root) loadTree();
 }
 function projectPicker() {
   if (busy) return;
@@ -181,19 +182,22 @@ function resetSearch() {
   show('matchHint', false);
   $('languageFilter').replaceChildren(new Option('All languages', ''));
   $('resultCount').textContent = '0';
-  $('searchDescription').textContent = 'Search matches names and docstrings. Try movement or login.';
-  $('results').replaceChildren(empty('Find something in your project', 'Search for a file, class, or function using the field above.'));
+  $('searchDescription').textContent = 'Browse the files below, or search names and docstrings: try movement or login.';
+  show('backToTree', false);
+  $('results').replaceChildren(empty('Loading files…', 'The whole index is listed here.'));
   resetReader();
+  if (tree && treeRevision === state.revision) renderTree();
 }
 async function openProject(path) {
   if (busy) return;
   $('projectDialog').close();
   await work('Indexing project…', async () => {
     state = await api('open', {path});
+    tree = null; treeRevision = -1;
     renderState(); resetSearch(); resetAsk(); view('ask');
     $('indexTime').textContent = 'Index up to date';
   });
-  if (state.root) $('question').focus();
+  if (state.root) { $('question').focus(); maybeSummarize(); }
 }
 function renderCandidates() {
   $('results').replaceChildren();
@@ -232,27 +236,35 @@ async function runSearch(query) {
   await work('Searching the index…', async () => {
     const data = await api('search', {query});
     candidates = data.candidates; lastQuery = query; resetReader();
-    $('query').value = query; show('clearQuery', true); view('explorer');
+    $('query').value = query; show('clearQuery', true); show('backToTree', true); view('explorer');
     histories[state.root] = [query, ...recentQueries().filter(q => q !== query)].slice(0, 8);
     persist('searches', histories); renderSearchHistory();
     $('languageFilter').replaceChildren(new Option('All languages', ''));
     for (const lang of [...new Set(candidates.map(c => c.language))].sort()) $('languageFilter').append(new Option(languageName(lang), lang));
     $('searchDescription').textContent = candidates.length + ' ' + (candidates.length === 1 ? 'file' : 'files') + ' matching “' + query + '”';
     show('matchHint', !!candidates.length);
+    $('resultsTitle').firstChild.textContent = 'Matches ';
     renderCandidates();
   });
+}
+function backToTree() {
+  lastQuery = ''; candidates = [];
+  $('query').value = ''; show('clearQuery', false); show('backToTree', false); show('matchHint', false);
+  $('languageFilter').replaceChildren(new Option('All languages', ''));
+  $('searchDescription').textContent = 'Browse the files below, or search names and docstrings: try movement or login.';
+  loadTree();
 }
 function symbolGroup(s) {
   if (['function','method'].includes(s.kind)) return 'Functions & methods';
   if (['class','interface','struct','enum'].includes(s.kind)) return 'Types';
-  return 'Fields & other definitions';
+  return 'Variables & fields';
 }
 function renderSymbols() {
   $('symbols').replaceChildren();
   const filter = $('symbolFilter').value.trim().toLowerCase();
   const symbols = outline.symbols.filter(s => s.qualified_name.toLowerCase().includes(filter));
   $('symbolCount').textContent = filter ? symbols.length + '/' + outline.symbols.length : outline.symbols.length;
-  for (const group of ['Functions & methods','Types','Fields & other definitions']) {
+  for (const group of ['Functions & methods','Types','Variables & fields']) {
     const items = symbols.filter(s => symbolGroup(s) === group);
     if (!items.length) continue;
     $('symbols').append(node('div', group, 'symbol-group'));
@@ -274,7 +286,8 @@ function renderSymbols() {
 async function showFile(candidate) {
   await work('Loading definitions…', async () => {
     const data = await api('structure', {path:candidate.path});
-    outline = data; selectedPath = candidate.path; resetSource(); renderCandidates();
+    outline = data; selectedPath = candidate.path; resetSource();
+    if (lastQuery) renderCandidates(); else renderTree();
     $('detailTitle').textContent = basename(selectedPath);
     $('detailPath').textContent = selectedPath;
     $('detailPath').title = selectedPath;
@@ -345,33 +358,101 @@ function omitted() {
    This runs outside work(), because a local model answers in minutes and the
    page has to stay readable meanwhile: the request starts the job and polling
    shows the steps as they happen. Only the controls that would disturb a job
-   in flight are disabled. */
+   in flight are disabled.
+
+   A question is one turn of a conversation: the question, the agent's
+   thinking - every request it made and its reason for it, folded away once
+   it is done, the way chat assistants show reasoning - and the answer. */
 const SVG = 'http://www.w3.org/2000/svg';
-const STEP_LABEL = {SEARCH:'SEARCH', STRUCTURE:'OUTLINE', SOURCE:'SOURCE', ANSWER:'ANSWER'};
-const EXAMPLES = ['Where is movement?', 'How does saving work?', 'What starts the program?'];
+const STEP_LABEL = {SEARCH:'SEARCH', STRUCTURE:'OUTLINE', SOURCE:'SOURCE', FILES:'FILES', SKIPPED:'SKIPPED', ANSWER:'ANSWER'};
+const EXAMPLES = ['What is this project?', 'What starts the program?', 'Where is movement?'];
+const EFFORT_NAMES = ['low', 'medium', 'high'];
+let models = [], modelsReachable = true, turns = [], currentTurn = null;
 
 function renderProviders() {
   if (!state.providers || $('provider').options.length) return;
   for (const name of state.providers) $('provider').append(new Option(name, name, name === state.default_provider, name === state.default_provider));
+  const saved = stored('effort', state.default_effort || 'medium');
+  $('effort').value = String(Math.max(0, EFFORT_NAMES.indexOf(saved)));
+  effortNote();
+  loadModels();
+}
+function effortName() { return EFFORT_NAMES[Number($('effort').value)] || 'medium'; }
+function effortNote() {
+  const effort = (state.efforts || []).find(e => e.name === effortName());
+  if (!effort) return;
+  $('effortLabel').textContent = effort.label;
+  const chosen = models.find(m => m.name === chosenModel());
+  const thinks = chosen && chosen.capabilities.includes('thinking');
+  const reasons = effort.name === 'low' ? 'no reasons written' : thinks ? 'the model thinks' : 'a short reason per step';
+  $('effortNote').textContent = `${effort.label}: up to ${effort.max_steps} requests · map of about ${effort.map_budget.toLocaleString()} tokens · ${reasons}`;
+}
+async function loadModels() {
+  const provider = $('provider').value;
+  let result;
+  try { result = await api('models', {provider}); }
+  catch { result = {models: [], reachable: false, default: ''}; }
+  models = result.models || [];
+  modelsReachable = result.reachable;
+  $('modelSelect').replaceChildren();
+  const local = provider === 'ollama';
+  if (local && models.length) {
+    const preferred = stored('model.' + provider, '') || result.default;
+    const pick = models.find(m => m.name === preferred) || models.find(m => m.name.split(':')[0] === result.default) || models[0];
+    for (const m of models) {
+      const label = [m.name, m.parameters, m.capabilities.includes('thinking') ? 'thinks' : ''].filter(Boolean).join(' · ');
+      $('modelSelect').append(new Option(label, m.name, m === pick, m === pick));
+    }
+  }
+  show('modelSelect', local && models.length > 0);
+  show('model', !(local && models.length > 0));
   providerNote();
+  effortNote();
+  if (local && models.length) api('preload', {model: chosenModel()}).catch(() => {});
+  maybeSummarize();
+}
+function chosenModel() {
+  return !$('modelSelect').classList.contains('hidden') ? $('modelSelect').value : $('model').value.trim();
 }
 function providerNote() {
-  const local = (state.local_providers || []).includes($('provider').value);
-  $('providerNote').textContent = local
+  const provider = $('provider').value;
+  const local = (state.local_providers || []).includes(provider);
+  let note = local
     ? 'Runs on this computer. Nothing leaves it.'
     : 'Your question, and whatever the model asks for, is sent to this provider. Its API key is read from your environment, never from this page.';
+  if (local && !modelsReachable) note = 'Ollama is not running. Start it, or install it from ollama.com.';
+  else if (local && !models.length) note = 'No models installed yet. In a terminal: ollama pull qwen2.5-coder';
+  $('providerNote').textContent = note;
   // A hosted model is named by the person paying for it; see openai_compatible.py.
-  $('model').placeholder = local || $('provider').value === 'anthropic' ? 'Default model' : 'Model name (required)';
+  $('model').placeholder = local || provider === 'anthropic' ? 'Default model' : 'Model name (required)';
   // The sidebar said this unconditionally, which stopped being true the day a
   // hosted provider could be chosen.
-  $('privacyNote').textContent = local ? 'Code stays on this computer' : `Questions go to ${$('provider').value}`;
+  $('privacyNote').textContent = local ? 'Code stays on this computer' : `Questions go to ${provider}`;
 }
+
+function renderSummary() {
+  const summary = state.summary;
+  const text = $('summaryText');
+  text.textContent = summary ? summary.text : 'No summary yet. The agent writes one from the project map, reading a file only when the map is not enough.';
+  text.classList.toggle('placeholder', !summary);
+  text.classList.toggle('stale', !!summary && !summary.fresh);
+  $('summaryMeta').textContent = summary ? summary.model : '';
+  $('summarizeButton').textContent = summary ? 'Rewrite' : 'Summarize';
+}
+function maybeSummarize() {
+  // Written once per project, automatically only when it costs nothing but
+  // time: a local model. A hosted one bills per token, so it waits for a click.
+  if (!state.root || state.summary || asking || busy) return;
+  if ($('provider').value !== 'ollama' || !models.length) return;
+  summarize();
+}
+
 function resetAsk() {
-  $('trail').replaceChildren();
-  $('answer').replaceChildren();
+  turns = []; currentTurn = null;
+  $('conversation').replaceChildren();
+  $('summaryTurn').replaceChildren();
   show('askEmpty', true);
   show('askError', false);
-  show('askSteps', false);
   $('question').value = '';
   $('askSuggestions').replaceChildren();
   for (const example of EXAMPLES) {
@@ -379,35 +460,71 @@ function resetAsk() {
     b.onclick = () => { $('question').value = example; runAsk(); };
     $('askSuggestions').append(b);
   }
+  renderSummary();
 }
-function renderTrail(steps, running) {
-  $('trail').replaceChildren();
-  for (const step of steps) {
-    const row = node('div', '', 'trail-step' + (step.refused ? ' refused' : ''));
+function newTurn(question, kind) {
+  const turn = {question, kind, steps: [], started: Date.now(), element: node('article', '', 'turn running')};
+  if (kind === 'question') turn.element.append(node('div', question, 'turn-question'));
+  const agent = node('div', '', 'turn-agent');
+  turn.thinking = node('details', '', 'thinking');
+  turn.thinking.open = true;
+  turn.summaryLine = node('summary');
+  turn.thinking.append(turn.summaryLine);
+  turn.trail = node('ol', '', 'trail');
+  turn.thinking.append(turn.trail);
+  turn.answer = node('div', '', 'turn-answer');
+  agent.append(turn.thinking, turn.answer);
+  turn.element.append(agent);
+  (kind === 'summary' ? $('summaryTurn') : $('conversation')).append(turn.element);
+  renderTurn(turn, true);
+  return turn;
+}
+function thinkingHeader(turn, running) {
+  const requests = turn.steps.filter(step => step.command && step.command !== 'ANSWER').length;
+  const seconds = Math.max(1, Math.round((Date.now() - turn.started) / 1000));
+  const title = running ? 'Thinking…' : `Thought for ${seconds}s`;
+  const parts = [requests + ' ' + (requests === 1 ? 'request' : 'requests')];
+  if (turn.cost) parts.push(turn.cost);
+  turn.summaryLine.replaceChildren(node('span', '✦', 'thinking-icon'), node('span', title, 'thinking-title'), node('span', parts.join(' · '), 'thinking-meta'));
+}
+function renderTurn(turn, running) {
+  turn.trail.replaceChildren();
+  for (const step of turn.steps) {
+    const row = node('li', '', 'trail-step' + (step.refused ? ' refused' : ''));
     const text = node('span', step.argument || (step.refused ? '' : step.note) || '—');
     // A refusal used to be only a colour. The first real model looped on one
     // for twelve requests, and the page never said what it was being told.
     if (step.refused && step.note) text.append(node('em', `Refused: ${step.note}`, 'trail-note'));
+    if (step.thought) text.append(node('span', step.thought, 'step-thought'));
     row.append(node('b', STEP_LABEL[step.command] || 'RETRY'), text);
-    $('trail').append(row);
+    turn.trail.append(row);
   }
   if (running) {
-    const row = node('div', '', 'trail-step pending');
+    const row = node('li', '', 'trail-step pending');
     row.append(node('b', '···'), node('span', 'Waiting for the model…'));
-    $('trail').append(row);
+    turn.trail.append(row);
   }
-  // Counted the way the answer card counts them, or the two disagree on screen:
-  // ANSWER is the model stopping, not another request to Aetron.
-  const requests = steps.filter(step => step.command && step.command !== 'ANSWER').length;
-  $('askSteps').textContent = requests + ' ' + (requests === 1 ? 'request' : 'requests');
-  show('askSteps', !!requests);
+  turn.element.classList.toggle('running', running);
+  thinkingHeader(turn, running);
+}
+function cost(answer) {
+  const total = answer.tokens_in + answer.tokens_out;
+  if (!total) return '';
+  const rounded = total >= 1000 ? (total / 1000).toFixed(1) + 'k' : String(total);
+  return (answer.tokens_estimated ? '≈' : '') + rounded + ' tokens';
 }
 function askFailed(message) {
   asking = false;
   document.body.classList.remove('busy');
   $('status').textContent = 'Question failed · see message above';
-  $('askError').textContent = message;
-  show('askError', true);
+  if (currentTurn) {
+    renderTurn(currentTurn, false);
+    currentTurn.answer.replaceChildren(node('div', message, 'inline-notice error-notice'));
+  } else {
+    $('askError').textContent = message;
+    show('askError', true);
+  }
+  currentTurn = null;
   availability();
 }
 function ring(percent) {
@@ -436,8 +553,10 @@ function renderAnswer(answer) {
   const cited = answer.citation;
   const card = node('section', '', 'answer-card');
   const head = node('div', '', 'answer-head');
-  head.append(node('h2', 'Answer'), node('span', answer.requests + ' ' + (answer.requests === 1 ? 'request' : 'requests') + ' · ' +
-    (answer.files_read.length ? 'source read from ' + answer.files_read.length + ' ' + (answer.files_read.length === 1 ? 'file' : 'files') : 'no source code read'), 'subtle'));
+  const spent = [answer.requests + ' ' + (answer.requests === 1 ? 'request' : 'requests'),
+    answer.files_read.length ? 'source read from ' + answer.files_read.length + ' ' + (answer.files_read.length === 1 ? 'file' : 'files') : 'no source code read'];
+  if (cost(answer)) spent.push(cost(answer));
+  head.append(node('h2', 'Answer'), node('span', spent.join(' · '), 'subtle'));
   const body = node('div', '', 'answer-body');
   if (cited) {
     // No score without a citation: "this project has no multiplayer code" is a
@@ -494,47 +613,139 @@ function renderAnswer(answer) {
       } else code.append(toolbar, pre);
       card.append(code);
     }
-  } else {
-    const note = node('div', '', 'checks');
-    note.append(node('p', 'Nothing to open: the model answered without settling on a definition it had read. Every request it did make is listed above.', 'subtle'));
-    card.append(note);
   }
-  $('answer').replaceChildren(card);
+  return card;
 }
 async function pollAsk() {
-  if (!asking) return;
+  if (!asking || !currentTurn) return;
   let result;
   try { result = await api('ask_status'); }
   catch (error) { askFailed(error.message); return; }
-  renderTrail(result.steps, !result.done);
+  currentTurn.steps = result.steps;
+  renderTurn(currentTurn, !result.done);
   if (!result.done) { setTimeout(pollAsk, 900); return; }
-  asking = false;
-  document.body.classList.remove('busy');
-  availability();
   if (result.error) return askFailed(result.error);
   if (result.answer.incomplete) return askFailed(result.answer.incomplete);
+  const turn = currentTurn;
+  asking = false; currentTurn = null;
+  document.body.classList.remove('busy');
+  turn.cost = cost(result.answer);
+  renderTurn(turn, false);
+  // Folded once done, like any assistant's reasoning: there to open, not in the way.
+  turn.thinking.open = false;
+  if (turn.kind === 'summary') {
+    state.summary = {text: result.answer.text, fresh: true, model: result.provider};
+    renderSummary();
+  } else {
+    turn.answer.replaceChildren(renderAnswer(result.answer));
+    turn.element.scrollIntoView({block: 'nearest'});
+  }
   $('status').textContent = 'Ready';
-  renderAnswer(result.answer);
+  availability();
 }
-async function runAsk() {
-  const question = $('question').value.trim();
+async function startJob(kind, question) {
   if (!state.root || busy || asking) return;
-  if (!question) { $('question').focus(); return; }
   asking = true;
   availability();
   show('askError', false);
-  show('askEmpty', false);
-  $('answer').replaceChildren();
+  if (kind === 'question') show('askEmpty', false);
+  if (kind === 'summary') $('summaryTurn').replaceChildren();
+  currentTurn = newTurn(question, kind);
   document.body.classList.add('busy');
-  $('status').textContent = 'Asking the model. It works through the levels one step at a time…';
-  renderTrail([], true);
+  $('status').textContent = kind === 'summary' ? 'Writing a summary of the project…' : 'Asking the model. It reads the map, then asks for only what it needs…';
   view('ask');
+  const body = {provider: $('provider').value, model: chosenModel(), effort: kind === 'summary' ? 'low' : effortName()};
   try {
-    const started = await api('ask', {question, provider:$('provider').value, model:$('model').value.trim()});
-    renderTrail(started.steps, true);
+    const started = await api(kind === 'summary' ? 'summarize' : 'ask', kind === 'summary' ? body : {question, ...body});
+    currentTurn.steps = started.steps;
+    renderTurn(currentTurn, true);
     setTimeout(pollAsk, 400);
   } catch (error) { askFailed(error.message); }
 }
+function runAsk() {
+  const question = $('question').value.trim();
+  if (!question) { $('question').focus(); return; }
+  $('question').value = '';
+  startJob('question', question);
+}
+function summarize() { startJob('summary', 'Summarize this project'); }
+
+/* The explorer's file tree ---------------------------------------------------
+   Browsing needs no search: the whole index is listed, the files the agent's
+   map would lead with come first, and a folder opens with a click. */
+let tree = null, treeRevision = -1;
+const LANG_SHORT = {python:'py', csharp:'cs', javascript:'js', typescript:'ts', lua:'lua', java:'java', go:'go', rust:'rs', ruby:'rb', php:'php', c:'c', cpp:'c++', kotlin:'kt', swift:'sw', scala:'sc', dart:'dart'};
+async function loadTree() {
+  if (!state.root || treeRevision === state.revision) return renderTree();
+  try { tree = await api('tree'); treeRevision = state.revision; }
+  catch (error) { $('results').replaceChildren(empty('Could not list files', error.message)); return; }
+  renderTree();
+}
+function treeRow(file, withDir) {
+  const b = node('button', '', 'tree-file');
+  b.classList.toggle('selected', file.path === selectedPath);
+  b.title = file.path + (file.describe ? ' — ' + file.describe : '');
+  b.append(node('span', LANG_SHORT[file.language] || file.language.slice(0, 3), 'lang-icon'));
+  const name = node('span', basename(file.path), 'file-name');
+  b.append(name);
+  if (withDir && file.path.includes('/')) b.append(node('span', file.path.slice(0, file.path.lastIndexOf('/')), 'file-dir'));
+  b.append(node('span', '', 'spacer'));
+  if (file.entry && file.entry !== 'entry name') b.append(node('span', file.entry, 'file-badge'));
+  if (!file.parsed) b.append(node('span', 'name only', 'file-badge muted'));
+  if (file.important) b.append(node('span', '★', 'file-badge star'));
+  b.onclick = () => showFile({path: file.path});
+  return b;
+}
+function renderTree() {
+  if (lastQuery || !tree) return;
+  const filter = $('treeFilter').value.trim().toLowerCase();
+  const files = tree.files.filter(f => !filter || f.path.toLowerCase().includes(filter));
+  $('resultsTitle').firstChild.textContent = 'Files ';
+  $('resultCount').textContent = files.length;
+  $('results').replaceChildren();
+  if (!files.length) { $('results').append(empty('No files match', 'Try part of a file or folder name.')); return; }
+  if (!filter) {
+    const important = files.filter(f => f.important);
+    if (important.length) {
+      $('results').append(node('div', 'Important files', 'tree-heading'));
+      for (const f of important) $('results').append(treeRow(f, true));
+      $('results').append(node('div', 'All files', 'tree-heading'));
+    }
+  }
+  const root = {dirs: new Map(), files: []};
+  for (const f of files) {
+    const parts = f.path.split('/');
+    let here = root;
+    for (const part of parts.slice(0, -1)) {
+      if (!here.dirs.has(part)) here.dirs.set(part, {dirs: new Map(), files: [], count: 0});
+      here = here.dirs.get(part);
+      here.count += 1;
+    }
+    here.files.push(f);
+  }
+  const draw = (branch, into, depth) => {
+    for (let [name, sub] of [...branch.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      // A folder holding one folder and nothing else is shown as one row, the
+      // way editors compact them: myminecraft/Assets/Scripts/ is one click,
+      // not three.
+      while (sub.dirs.size === 1 && !sub.files.length) {
+        const [childName, child] = [...sub.dirs.entries()][0];
+        name += '/' + childName; sub = child;
+      }
+      const folder = node('details', '', 'tree-folder');
+      folder.open = !!filter || depth === 0 && branch.dirs.size === 1 && !branch.files.length;
+      const head = node('summary');
+      head.append(node('span', name + '/'), node('span', String(sub.count), 'tree-count'));
+      const children = node('div', '', 'tree-children');
+      folder.append(head, children);
+      draw(sub, children, depth + 1);
+      into.append(folder);
+    }
+    for (const f of branch.files.sort((a, b) => a.path.localeCompare(b.path))) into.append(treeRow(f, false));
+  };
+  draw(root, $('results'), 0);
+}
+
 async function openCited(cited) {
   view('explorer');
   await runSearch(basename(cited.rel_path).replace(/\.[^.]+$/, ''));
@@ -548,7 +759,13 @@ async function openCited(cited) {
 }
 $('askForm').onsubmit = event => { event.preventDefault(); runAsk(); };
 $('askTab').onclick = () => view('ask');
-$('provider').onchange = providerNote;
+$('provider').onchange = loadModels;
+$('modelSelect').onchange = () => { persist('model.' + $('provider').value, $('modelSelect').value); effortNote(); api('preload', {model: chosenModel()}).catch(() => {}); };
+$('effort').oninput = () => { persist('effort', effortName()); effortNote(); };
+$('summarizeButton').onclick = summarize;
+$('newConversation').onclick = () => work('Starting a new conversation…', async () => { state = await api('clear_conversation'); resetAsk(); });
+$('treeFilter').oninput = () => { if (lastQuery) backToTree(); else renderTree(); };
+$('backToTree').onclick = backToTree;
 
 $('openForm').onsubmit = event => { event.preventDefault(); openProject($('projectPath').value); };
 for (const id of ['projectSwitch','openProjectButton','welcomeOpen']) $(id).onclick = projectPicker;
@@ -556,16 +773,16 @@ document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => $(b.dat
 document.querySelector('.brand').onclick = event => { event.preventDefault(); view('explorer'); };
 $('searchForm').onsubmit = event => { event.preventDefault(); runSearch($('query').value); };
 $('query').oninput = () => show('clearQuery', !!$('query').value);
-$('clearQuery').onclick = () => { $('query').value = ''; show('clearQuery',false); $('query').focus(); };
+$('clearQuery').onclick = () => { if (lastQuery) backToTree(); else { $('query').value = ''; show('clearQuery',false); } $('query').focus(); };
 $('languageFilter').onchange = renderCandidates;
 $('symbolFilter').oninput = renderSymbols;
 $('explorerTab').onclick = () => view('explorer');
 $('overviewTab').onclick = overview;
 $('omittedTab').onclick = omitted;
 $('refresh').onclick = () => work('Rescanning project…', async () => {
-  state = await api('refresh'); renderState(); resetSearch(); resetAsk(); view('ask');
+  state = await api('refresh'); tree = null; treeRevision = -1; renderState(); resetSearch(); resetAsk(); view('ask');
   $('indexTime').textContent = 'Updated ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  notify('Index refreshed. Search again to see current definitions.');
+  notify('Index refreshed.');
 });
 $('themeButton').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 $('helpButton').onclick = () => $('helpDialog').showModal();

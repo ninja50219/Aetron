@@ -38,8 +38,10 @@ def test_progressive_disclosure_and_cache(workspace, monkeypatch):
     monkeypatch.setattr(web, "scan", Mock(side_effect=AssertionError("unexpected scan")))
     with pytest.raises(ValueError, match="outline first"):
         call(workspace, "source", path="combat.py", name="combat")
-    with pytest.raises(ValueError, match="search results"):
-        call(workspace, "structure", path="combat.py")
+    # The page is the owner's: any indexed file can be outlined, and nothing
+    # outside the index can. The model's rationing lives in ask.py.
+    with pytest.raises(ValueError, match="not in this project's index"):
+        call(workspace, "structure", path="../secrets.py")
     found = call(workspace, "search", query="combat")
     assert found["candidates"][0]["path"] == "combat.py"
     assert "return 123" not in str(found)
@@ -70,12 +72,12 @@ def test_failed_open_preserves_project(workspace):
     assert workspace.state()["recent"] == [str(root)]
 
 
-def test_new_search_revokes_previous_outline(workspace):
-    call(workspace, "search", query="combat")
+def test_a_new_search_keeps_an_open_outline(workspace):
+    """The explorer is browsed from a tree now; searching for something else
+    must not close the file the person was reading."""
     call(workspace, "structure", path="combat.py")
     assert call(workspace, "search", query="nothinghere")["candidates"] == []
-    with pytest.raises(ValueError, match="outline first"):
-        call(workspace, "source", path="combat.py", name="combat")
+    assert "return 123" in call(workspace, "source", path="combat.py", name="combat")["text"]
 
 
 @pytest.fixture
@@ -261,9 +263,6 @@ def test_a_cited_file_opens_in_the_explorer_without_searching_again(game, monkey
         "STRUCTURE Player/PlayerMovement.cs",
         "ANSWER Movement is in Player/PlayerMovement.cs, HandleWasdInput at line 3.",
     )
-    with pytest.raises(ValueError, match="search results"):
-        call(game, "structure", path="Player/PlayerMovement.cs")
-
     call(game, "ask", question="where is movement?")
     wait_for_answer(game)
 
@@ -309,3 +308,111 @@ def test_a_function_named_after_its_file_opens_alone(tmp_path, make_project):
     assert source["location"] == "ask.py:4"
     assert "other" not in source["text"]
     assert source["problem"] == ""
+
+
+class Thinking(Scripted):
+    """A model that thinks aloud and reports what it cost."""
+
+    def complete(self, system, messages):
+        self.last_thinking = "The map says the movement script is PlayerMovement.cs."
+        self.last_usage = (500, 10)
+        return super().complete(system, messages)
+
+
+def test_the_tree_lists_every_file_and_marks_what_matters(game):
+    files = call(game, "tree")["files"]
+    assert [f["path"] for f in files] == ["Player/PlayerMovement.cs"]
+    entry = files[0]
+    assert entry["important"] and entry["parsed"]
+    assert entry["definitions"] == 2
+    assert "class PlayerMovement" in entry["describe"]
+
+
+def test_a_question_carries_its_effort_thinking_and_cost(game, monkeypatch):
+    seen = {}
+
+    def provider(name, model=None, **kwargs):
+        seen.update(kwargs)
+        return Thinking("STRUCTURE Player/PlayerMovement.cs", "ANSWER In PlayerMovement.HandleWasdInput, line 3.")
+
+    monkeypatch.setattr(web, "get_provider", provider)
+    call(game, "ask", question="where is movement?", effort="high")
+    state = wait_for_answer(game)
+    assert seen["effort"] == "high"
+    assert state["effort"] == "high"
+    assert state["steps"][0]["thought"].startswith("The map says")
+    answer = state["answer"]
+    assert (answer["tokens_in"], answer["tokens_out"]) == (1000, 20)
+    assert not answer["tokens_estimated"]
+
+
+def test_an_unknown_effort_is_refused(game, monkeypatch):
+    use_model(monkeypatch, "ANSWER x")
+    with pytest.raises(ValueError, match="Unknown effort"):
+        call(game, "ask", question="q", effort="ludicrous")
+
+
+def test_a_follow_up_is_asked_with_the_earlier_answer(game, monkeypatch):
+    calls = []
+
+    class Recorder(Scripted):
+        def complete(self, system, messages):
+            calls.append(messages[0].content)
+            return super().complete(system, messages)
+
+    monkeypatch.setattr(web, "get_provider", lambda *a, **k: Recorder("ANSWER It is in PlayerMovement.cs."))
+    call(game, "ask", question="where is movement?")
+    wait_for_answer(game)
+    monkeypatch.setattr(web, "get_provider", lambda *a, **k: Recorder("ANSWER Line 3."))
+    call(game, "ask", question="which line?")
+    wait_for_answer(game)
+    assert "Earlier question: where is movement?" in calls[-1]
+    assert game.request("state", {})["conversation"] == 2
+    call(game, "clear_conversation")
+    assert game.request("state", {})["conversation"] == 0
+
+
+def test_a_summary_is_written_once_and_remembered(game, monkeypatch, tmp_path):
+    use_model(monkeypatch, "ANSWER This project seems to be a small Unity movement demo.")
+    call(game, "summarize")
+    wait_for_answer(game)
+    summary = game.request("state", {})["summary"]
+    assert summary["text"].startswith("This project seems to be")
+    assert summary["fresh"]
+
+    # A new page on the same machine finds it without asking a model again.
+    again = web.Workspace(tmp_path / "history.json")
+    again.request("open", {"path": str(game.scanned.root)})
+    assert again.request("state", {})["summary"]["text"] == summary["text"]
+    assert not (game.scanned.root / "summaries").exists()
+
+
+def test_the_summary_is_given_to_later_questions(game, monkeypatch):
+    use_model(monkeypatch, "ANSWER This project seems to be a movement demo.")
+    call(game, "summarize")
+    wait_for_answer(game)
+    systems = []
+
+    class Recorder(Scripted):
+        def complete(self, system, messages):
+            systems.append(system)
+            return super().complete(system, messages)
+
+    monkeypatch.setattr(web, "get_provider", lambda *a, **k: Recorder("ANSWER ok"))
+    call(game, "ask", question="where is movement?")
+    wait_for_answer(game)
+    assert "Summary from an earlier look: This project seems to be a movement demo." in systems[0]
+
+
+def test_installed_models_are_offered(workspace, monkeypatch):
+    from aetron.ai_providers import ollama
+
+    monkeypatch.setattr(ollama, "list_models", lambda host=ollama.DEFAULT_HOST: [
+        {"name": "qwen2.5-coder:latest", "size": 1, "parameters": "7.6B", "family": "qwen2", "capabilities": ["completion"]}
+    ])
+    offered = workspace.request("models", {"provider": "ollama"})
+    assert offered["reachable"]
+    assert offered["models"][0]["name"] == "qwen2.5-coder:latest"
+    monkeypatch.setattr(ollama, "list_models", lambda host=ollama.DEFAULT_HOST: None)
+    assert not workspace.request("models", {"provider": "ollama"})["reachable"]
+    assert workspace.request("models", {"provider": "openai"})["default"] == ""
