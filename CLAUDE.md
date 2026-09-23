@@ -7,14 +7,20 @@ design decisions, the current state, and where the previous session stopped.
 
 Last verified 2026-09-23 by running the suite, not by reading this file.
 
-- `main` is at `209ec65` and is the only branch worth starting from. Every
-  commit ever pushed to this repository is contained in it. Four other
-  branches exist: `claude/gallant-bell-s94tns` points at the same commit as
-  `main`, and `feat/interactive-menu`, `feat/scanner` and
-  `claude/funny-dijkstra-5snaae` are behind it. All four are fully merged and
-  none holds work that `main` lacks - check with
-  `git merge-base --is-ancestor origin/<branch> origin/main` rather than
-  taking this on faith.
+- `main` is the only branch worth starting from, and every commit ever pushed
+  to this repository is contained in it. Four others exist:
+  `claude/gallant-bell-s94tns` has tracked `main` commit for commit, and
+  `feat/interactive-menu`, `feat/scanner` and `claude/funny-dijkstra-5snaae`
+  sit behind it. None holds work `main` lacks. Confirm rather than believe
+  this - a line like this one is stale the moment somebody pushes:
+
+  ```bash
+  git fetch origin --prune
+  for b in $(git ls-remote --heads origin | sed 's#.*refs/heads/##'); do
+      git merge-base --is-ancestor origin/$b origin/main \
+          && echo "$b: contained in main" || echo "$b: HAS WORK MAIN LACKS"
+  done
+  ```
 - 505 tests pass in about 3 seconds; 500 pass and 5 skip without `pathspec`.
 - The pipeline runs end to end in two places. `aetron ask <project> "where is
   movement?"` answers from a terminal, and `aetron ui` opens a local page that
