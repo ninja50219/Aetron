@@ -24,7 +24,13 @@ import sys
 import threading
 import webbrowser
 
-from aetron.ai_providers import DEFAULT_PROVIDER, PROVIDERS, ProviderError, get_provider
+from aetron.ai_providers import (
+    DEFAULT_PROVIDER,
+    LOCAL_PROVIDERS,
+    PROVIDERS,
+    ProviderError,
+    get_provider,
+)
 from aetron.analyzer import analyze
 from aetron.ask import MAX_STEPS, ask
 from aetron.cli.interactive import load_history, save_history
@@ -126,6 +132,7 @@ class Workspace:
     def state(self):
         result = {"recent": self.history, "gitignore": AVAILABLE, "revision": self.revision,
                   "providers": list(PROVIDERS), "default_provider": DEFAULT_PROVIDER,
+                  "local_providers": sorted(LOCAL_PROVIDERS),
                   "max_steps": MAX_STEPS}
         if self.scanned is not None:
             result.update({"root": str(self.scanned.root), "name": self.scanned.root.name,
@@ -234,7 +241,11 @@ class Workspace:
                 answer = ask(provider, scanned, analysis, question, on_step=job.record)
             except ProviderError as exc:
                 job.finish(error=str(exc))
-            except (OSError, ValueError, RuntimeError) as exc:
+            except Exception as exc:
+                # Anything at all. A job that dies without finishing leaves the
+                # page polling forever and every rescan refused - which is what
+                # a bare TypeError from a provider SDK did, the first time
+                # anyone asked a hosted model without a key.
                 job.finish(error=f"The question could not be answered: {exc}")
             else:
                 job.finish(answer=describe_answer(answer))

@@ -9,7 +9,11 @@ from .base import Message, Provider, ProviderError
 
 # Imported lazily by name so that a missing optional dependency is an error
 # when that provider is chosen, not when Aetron is imported.
-PROVIDERS = ("ollama", "anthropic")
+PROVIDERS = ("ollama", "anthropic", "openai", "gemini")
+
+# The ones that run on this machine. Everything else receives the question and
+# whatever the model asks to see, which callers are expected to say out loud.
+LOCAL_PROVIDERS = frozenset({"ollama"})
 
 DEFAULT_PROVIDER = "ollama"
 
@@ -30,6 +34,11 @@ def get_provider(name: str, model: str | None = None, **kwargs) -> Provider:
 
         return AnthropicProvider(model=model or DEFAULT_MODEL, **kwargs)
 
+    if name in ("openai", "gemini"):
+        from .openai_compatible import OpenAICompatibleProvider
+
+        return OpenAICompatibleProvider(name, model=model, **kwargs)
+
     raise ProviderError(
         f"Unknown provider {name!r}. Available: {', '.join(PROVIDERS)}"
     )
@@ -37,6 +46,7 @@ def get_provider(name: str, model: str | None = None, **kwargs) -> Provider:
 
 __all__ = [
     "DEFAULT_PROVIDER",
+    "LOCAL_PROVIDERS",
     "PROVIDERS",
     "Message",
     "Provider",

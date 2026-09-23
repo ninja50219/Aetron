@@ -269,3 +269,43 @@ def test_a_cited_file_opens_in_the_explorer_without_searching_again(game, monkey
 
     outline = call(game, "structure", path="Player/PlayerMovement.cs")
     assert outline["rel_path"] == "Player/PlayerMovement.cs"
+
+
+def test_an_unexpected_error_from_a_provider_still_finishes_the_question(
+    game, monkeypatch
+):
+    """The Anthropic SDK raises a bare TypeError when it finds no key. It
+    escaped the worker, the job never finished, and every rescan after it was
+    refused as though the question were still running."""
+
+    class NoKey(Scripted):
+        def complete(self, system, messages):
+            raise TypeError("Could not resolve authentication method.")
+
+    monkeypatch.setattr(web, "get_provider", lambda *a, **k: NoKey())
+    call(game, "ask", question="where is movement?")
+    finished = wait_for_answer(game)
+    assert "Could not resolve authentication method" in finished["error"]
+    call(game, "refresh")
+
+
+def test_the_page_is_told_which_providers_stay_on_this_machine(game):
+    state = game.request("state", {})
+    assert state["local_providers"] == ["ollama"]
+    assert "openai" in state["providers"]
+
+
+def test_a_function_named_after_its_file_opens_alone(tmp_path, make_project):
+    """The file's own module symbol shares the name and used to win, so the
+    explorer showed the whole file under the function's heading."""
+    root = make_project(
+        {"ask.py": '"""Asking."""\n\n\ndef ask():\n    return 1\n\n\ndef other():\n    return 2\n'}
+    )
+    ws = web.Workspace(tmp_path / "history.json")
+    ws.request("open", {"path": str(root)})
+    call(ws, "search", query="ask")
+    call(ws, "structure", path="ask.py")
+    source = call(ws, "source", path="ask.py", name="ask")
+    assert source["location"] == "ask.py:4"
+    assert "other" not in source["text"]
+    assert source["problem"] == ""

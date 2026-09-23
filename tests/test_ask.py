@@ -456,3 +456,29 @@ class TestTheAnswerPointsSomewhere:
         assert answer.citation.location == "Systems/SaveSystem.cs:3"
         assert answer.citation.confidence == 100
 
+
+class TestAKeyInTheProjectNeverReachesTheModel:
+    """Level 3 sends one definition, and one definition can hold a key. A
+    hosted model is a third party, so the key is hidden on the way out."""
+
+    def test_the_source_the_model_reads_has_the_key_hidden(self, project):
+        # Built at runtime so no key-shaped literal is committed.
+        key = "sk-proj-" + "Q1w2E3r4" * 5
+        scan_result, analysis = project(
+            {"config.py": f"def connect():\n    return client(api_key=\"{key}\")\n"}
+        )
+        model = Recording(
+            "SEARCH connect",
+            "STRUCTURE config.py",
+            "SOURCE config.py connect",
+            "ANSWER The key is hard-coded in config.py, connect at line 1.",
+        )
+        answer = ask(model, scan_result, analysis, "where is the api key set?")
+
+        sent = "\n".join(
+            system + "".join(m.content for m in messages) for system, messages in model.calls
+        )
+        assert key not in sent
+        assert "[hidden by Aetron: OpenAI API key]" in sent
+        # The person asking, on their own machine, still sees the real line.
+        assert key in answer.citation.text

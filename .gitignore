@@ -236,11 +236,33 @@ dist/
 .eggs/
 
 # ===== secrets and local configuration =====
+# Aetron reads API keys from environment variables only and never writes one
+# to disk. These patterns catch the places people put keys anyway, so that
+# "git add ." cannot publish one. tests/test_no_secrets.py fails the suite if
+# a file that looks like a key is ever tracked or about to be.
 .env
-.env.local
+.env.*
+!.env.example
+*.env
+.envrc
 *.key
+*.pem
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
 secrets.json
+secrets.toml
+secrets.yaml
+secrets.yml
+credentials.json
+*credentials*.json
+*.secret
+*.secrets
+api_key*.txt
+apikey*.txt
 config.local.json
+.aetron/
 
 # ===== testing tools / cache =====
 .pytest_cache/

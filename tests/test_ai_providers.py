@@ -1,8 +1,10 @@
 """Tests for the provider layer.
 
-No network. What is worth testing here is the part that runs when things are
-wrong: a provider that is not installed, a daemon that is not running, a name
-that does not exist. Those are the paths a user actually meets.
+No network beyond loopback. What is worth testing here is the part that runs
+when things are wrong: a provider that is not installed, a daemon that is not
+running, a name that does not exist, a key that is missing or rejected. Those
+are the paths a user actually meets. A real Ollama is exercised separately, in
+test_ollama_live.py, when one is available.
 """
 
 import json
@@ -16,13 +18,26 @@ from aetron.ai_providers.ollama import OllamaProvider
 
 
 class TestTheRegistry:
-    def test_every_listed_provider_can_be_named(self):
+    def test_every_listed_provider_can_be_named(self, monkeypatch):
+        # Fake keys, built at runtime so that no key-shaped literal is ever
+        # committed; see test_no_secrets.py.
+        for variable in ("OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY"):
+            monkeypatch.setenv(variable, "test-" + "k" * 24)
         for name in PROVIDERS:
             try:
-                get_provider(name)
+                provider = get_provider(name, "some-model")
             except ProviderError as exc:
                 # Acceptable only when the optional dependency is absent.
                 assert "not installed" in str(exc)
+            else:
+                assert provider.name == name
+                assert provider.model == "some-model"
+
+    def test_only_ollama_counts_as_local(self):
+        """What the page uses to decide whether to warn that code leaves."""
+        from aetron.ai_providers import LOCAL_PROVIDERS
+
+        assert LOCAL_PROVIDERS == {"ollama"}
 
     def test_an_unknown_provider_lists_the_real_ones(self):
         with pytest.raises(ProviderError) as caught:
@@ -217,3 +232,301 @@ class TestOptionalDependencies:
 
         importlib.reload(aetron.ai_providers)
 
+
+# --- hosted providers ------------------------------------------------------
+#
+# Tested against a real HTTP server on loopback rather than a patched urlopen:
+# the thing worth checking is what actually crosses the socket - the header
+# the key travels in, the body, the path - and a patch would only check what
+# the code believes it sends.
+
+import http.server
+import threading
+
+FAKE_KEY = "test-" + "x" * 40
+
+
+@pytest.fixture
+def server():
+    """A loopback server that records each request and replies as scripted."""
+
+    class Recorder:
+        requests: list = []
+        replies: list = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            size = int(self.headers.get("Content-Length", "0"))
+            Recorder.requests.append(
+                {"path": self.path,
+                 "headers": {k.lower(): v for k, v in self.headers.items()},
+                 "body": json.loads(self.rfile.read(size) or b"{}")}
+            )
+            status, body = Recorder.replies.pop(0) if Recorder.replies else (200, {})
+            content = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+    Recorder.requests, Recorder.replies = [], []
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(
+        target=httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    )
+    thread.start()
+    Recorder.url = f"http://127.0.0.1:{httpd.server_port}"
+    yield Recorder
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def chat_reply(content):
+    return {"choices": [{"message": {"role": "assistant", "content": content}}]}
+
+
+class TestKeysComeFromTheEnvironmentOnly:
+    def test_a_missing_key_names_the_variable_and_how_to_set_it(self, monkeypatch):
+        from aetron.ai_providers.base import key_from_environment
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(ProviderError) as caught:
+            key_from_environment("OPENAI_API_KEY", "OpenAI")
+        message = str(caught.value)
+        assert "OPENAI_API_KEY is not set" in message
+        assert "setx OPENAI_API_KEY" in message
+        assert "export OPENAI_API_KEY" in message
+        assert "Never put the key in a file inside your project" in message
+
+    def test_a_blank_key_counts_as_missing(self, monkeypatch):
+        from aetron.ai_providers.base import key_from_environment
+
+        monkeypatch.setenv("OPENAI_API_KEY", "   ")
+        with pytest.raises(ProviderError):
+            key_from_environment("OPENAI_API_KEY", "OpenAI")
+
+    def test_a_key_is_scrubbed_from_text(self):
+        from aetron.ai_providers.base import redact
+
+        assert redact(f"Incorrect API key provided: {FAKE_KEY}.", FAKE_KEY) == (
+            "Incorrect API key provided: [key hidden]."
+        )
+
+    def test_a_short_secret_does_not_blank_ordinary_words(self):
+        from aetron.ai_providers.base import redact
+
+        assert redact("the model", "the") == "the model"
+
+
+class TestOpenAICompatible:
+    def _provider(self, server, name="openai", **kwargs):
+        from aetron.ai_providers.openai_compatible import OpenAICompatibleProvider
+
+        return OpenAICompatibleProvider(
+            name, model=kwargs.pop("model", "some-model"), api_key=FAKE_KEY,
+            base_url=server.url, **kwargs
+        )
+
+    def test_the_request_is_the_chat_completions_shape(self, server):
+        server.replies.append((200, chat_reply("SEARCH login")))
+        reply = self._provider(server).complete(
+            "the rules", [Message("user", "where is login?")]
+        )
+        assert reply == "SEARCH login"
+
+        sent = server.requests[0]
+        assert sent["path"] == "/chat/completions"
+        assert sent["headers"]["authorization"] == f"Bearer {FAKE_KEY}"
+        assert sent["body"] == {
+            "model": "some-model",
+            "messages": [
+                {"role": "system", "content": "the rules"},
+                {"role": "user", "content": "where is login?"},
+            ],
+        }
+
+    def test_the_key_is_read_from_the_environment(self, server, monkeypatch):
+        from aetron.ai_providers.openai_compatible import OpenAICompatibleProvider
+
+        monkeypatch.setenv("GEMINI_API_KEY", FAKE_KEY)
+        server.replies.append((200, chat_reply("ANSWER none")))
+        provider = OpenAICompatibleProvider("gemini", model="m", base_url=server.url)
+        provider.complete("s", [Message("user", "q")])
+        assert server.requests[0]["headers"]["authorization"] == f"Bearer {FAKE_KEY}"
+
+    def test_openai_honours_its_own_base_url_variable(self, server, monkeypatch):
+        from aetron.ai_providers.openai_compatible import OpenAICompatibleProvider
+
+        monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+        monkeypatch.setenv("OPENAI_BASE_URL", server.url + "/v1/")
+        server.replies.append((200, chat_reply("ANSWER none")))
+        OpenAICompatibleProvider("openai", model="m").complete("s", [Message("user", "q")])
+        assert server.requests[0]["path"] == "/v1/chat/completions"
+
+    def test_a_hosted_model_must_be_named(self, monkeypatch):
+        """No default: the model decides the bill, so the person paying picks."""
+        monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+        with pytest.raises(ProviderError, match="Name the OpenAI model"):
+            get_provider("openai")
+
+    def test_a_missing_key_is_an_error_before_anything_is_sent(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        with pytest.raises(ProviderError, match="GEMINI_API_KEY is not set"):
+            get_provider("gemini", "some-model")
+
+    @pytest.mark.parametrize(
+        "url", ["http://api.example.com/v1", "ftp://127.0.0.1", "api.example.com"]
+    )
+    def test_a_key_is_never_sent_in_the_clear(self, url):
+        from aetron.ai_providers.openai_compatible import OpenAICompatibleProvider
+
+        with pytest.raises(ProviderError, match="Refusing to send an API key"):
+            OpenAICompatibleProvider("openai", model="m", api_key=FAKE_KEY, base_url=url)
+
+    @pytest.mark.parametrize("url", ["https://api.example.com/v1", "http://localhost:1234/v1"])
+    def test_https_and_this_machine_are_allowed(self, url):
+        from aetron.ai_providers.openai_compatible import OpenAICompatibleProvider
+
+        provider = OpenAICompatibleProvider("openai", model="m", api_key=FAKE_KEY, base_url=url)
+        assert provider.base_url == url
+
+    def test_a_rejected_key_names_its_variable_and_never_shows_it(self, server):
+        # Shaped like OpenAI's real reply, which quotes the key it rejected.
+        server.replies.append(
+            (401, {"error": {"message": f"Incorrect API key provided: {FAKE_KEY}.",
+                             "type": "invalid_request_error"}})
+        )
+        with pytest.raises(ProviderError) as caught:
+            self._provider(server).complete("s", [Message("user", "q")])
+        message = str(caught.value)
+        assert "rejected the key in OPENAI_API_KEY" in message
+        assert FAKE_KEY not in message
+        assert "[key hidden]" in message
+        assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+    def test_an_unknown_model_says_so(self, server):
+        server.replies.append(
+            (404, {"error": {"message": "The model `nope` does not exist."}})
+        )
+        with pytest.raises(ProviderError) as caught:
+            self._provider(server, model="nope").complete("s", [Message("user", "q")])
+        assert "has no model called 'nope'" in str(caught.value)
+        assert "does not exist" in str(caught.value)
+
+    def test_googles_list_shaped_error_is_read_too(self, server):
+        server.replies.append(
+            (400, [{"error": {"code": 400, "message": "API key not valid.",
+                              "status": "INVALID_ARGUMENT"}}])
+        )
+        with pytest.raises(ProviderError) as caught:
+            self._provider(server, name="gemini").complete("s", [Message("user", "q")])
+        assert str(caught.value) == "Gemini returned 400: API key not valid."
+
+    def test_a_quota_error_is_named(self, server):
+        server.replies.append((429, {"error": {"message": "You exceeded your quota."}}))
+        with pytest.raises(ProviderError, match="rate limit or quota"):
+            self._provider(server).complete("s", [Message("user", "q")])
+
+    def test_a_refusal_is_an_error_not_an_answer(self, server):
+        server.replies.append(
+            (200, {"choices": [{"message": {"content": None, "refusal": "I can't help."}}]})
+        )
+        with pytest.raises(ProviderError, match="declined to answer: I can't help"):
+            self._provider(server).complete("s", [Message("user", "q")])
+
+    def test_an_empty_reply_is_an_error(self, server):
+        server.replies.append((200, chat_reply("  ")))
+        with pytest.raises(ProviderError, match="empty message"):
+            self._provider(server).complete("s", [Message("user", "q")])
+
+    def test_a_server_that_is_not_there_says_where_it_looked(self):
+        from aetron.ai_providers.openai_compatible import OpenAICompatibleProvider
+
+        provider = OpenAICompatibleProvider(
+            "openai", model="m", api_key=FAKE_KEY, base_url="http://127.0.0.1:9"
+        )
+        with pytest.raises(ProviderError, match="Could not reach OpenAI at http://127.0.0.1:9"):
+            provider.complete("s", [Message("user", "q")])
+
+
+class TestAnthropic:
+    """Through the real SDK, pointed at the loopback server, so the wire
+    format is the SDK's own rather than a guess at it."""
+
+    @pytest.fixture
+    def anthropic_at(self, server, monkeypatch):
+        pytest.importorskip("anthropic")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", server.url)
+        return server
+
+    def _reply(self, text="SEARCH login", stop="end_turn", model="claude-opus-5"):
+        content = [{"type": "thinking", "thinking": "", "signature": "sig"}]
+        if text:
+            content.append({"type": "text", "text": text})
+        return {
+            "id": "msg_test", "type": "message", "role": "assistant", "model": model,
+            "content": content, "stop_reason": stop, "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+    def _provider(self, model="claude-opus-5"):
+        from aetron.ai_providers.anthropic_api import AnthropicProvider
+
+        return AnthropicProvider(model=model, api_key=FAKE_KEY)
+
+    def test_the_default_model_asks_for_refusal_fallbacks(self, anthropic_at):
+        anthropic_at.replies.append((200, self._reply()))
+        assert self._provider().complete("the rules", [Message("user", "q")]) == "SEARCH login"
+
+        sent = anthropic_at.requests[0]
+        assert sent["path"].startswith("/v1/messages")
+        assert "server-side-fallback-2026-07-01" in sent["headers"]["anthropic-beta"]
+        assert sent["body"]["fallbacks"] == "default"
+        assert sent["body"]["system"] == "the rules"
+        assert sent["body"]["max_tokens"] == 16000
+        assert sent["headers"]["x-api-key"] == FAKE_KEY
+
+    def test_another_model_is_asked_without_them(self, anthropic_at):
+        anthropic_at.replies.append((200, self._reply(model="claude-haiku-4-5")))
+        self._provider("claude-haiku-4-5").complete("s", [Message("user", "q")])
+        sent = anthropic_at.requests[0]
+        assert "fallbacks" not in sent["body"]
+        assert "server-side-fallback" not in sent["headers"].get("anthropic-beta", "")
+
+    def test_thinking_blocks_are_not_part_of_the_reply(self, anthropic_at):
+        anthropic_at.replies.append((200, self._reply("ANSWER in login.py line 2")))
+        assert self._provider().complete("s", [Message("user", "q")]) == "ANSWER in login.py line 2"
+
+    def test_a_reply_spent_on_thinking_says_so(self, anthropic_at):
+        anthropic_at.replies.append((200, self._reply(text="", stop="max_tokens")))
+        with pytest.raises(ProviderError, match="16000-token limit"):
+            self._provider().complete("s", [Message("user", "q")])
+
+    def test_an_unknown_model_says_so(self, anthropic_at):
+        anthropic_at.replies.append(
+            (404, {"type": "error", "error": {"type": "not_found_error", "message": "model: nope"}})
+        )
+        with pytest.raises(ProviderError, match="no model called 'nope'"):
+            self._provider("nope").complete("s", [Message("user", "q")])
+
+    def test_no_credentials_at_all_is_a_provider_error(self, monkeypatch, tmp_path):
+        """The SDK builds a client with no key and raises a bare TypeError on
+        the first request, which escaped every handler in Aetron."""
+        pytest.importorskip("anthropic")
+        from aetron.ai_providers.anthropic_api import AnthropicProvider
+
+        for variable in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+            monkeypatch.delenv(variable, raising=False)
+        # No "ant auth login" profile to fall back on.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+
+        with pytest.raises(ProviderError) as caught:
+            AnthropicProvider().complete("s", [Message("user", "q")])
+        assert "ANTHROPIC_API_KEY" in str(caught.value)
+        assert "ant auth login" in str(caught.value)

@@ -34,6 +34,7 @@ from aetron.analyzer.analyzer import AnalysisResult
 from aetron.context.search import search
 from aetron.context.source import get_source
 from aetron.context.structure import FileStructure, build_structure, render
+from aetron.credentials import hide_credentials
 from aetron.scanner.scanner import ScanResult
 
 # How many commands a model may issue before it has to answer. Reached in
@@ -385,6 +386,11 @@ def ask(
             return answer
 
         observation, refused = session.run(command, argument)
+        # The one door between the project and the model, so the one place a
+        # key in someone's source is stopped. The page and the citation still
+        # show the real code: they stay on this machine, and a hosted model
+        # does not.
+        observation, _ = hide_credentials(observation)
         step = Step(
             command=command, argument=argument, observation=observation, refused=refused
         )

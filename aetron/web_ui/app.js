@@ -356,9 +356,15 @@ function renderProviders() {
   providerNote();
 }
 function providerNote() {
-  $('providerNote').textContent = $('provider').value === 'ollama'
+  const local = (state.local_providers || []).includes($('provider').value);
+  $('providerNote').textContent = local
     ? 'Runs on this computer. Nothing leaves it.'
-    : 'Your question, and whatever the model asks for, is sent to this provider.';
+    : 'Your question, and whatever the model asks for, is sent to this provider. Its API key is read from your environment, never from this page.';
+  // A hosted model is named by the person paying for it; see openai_compatible.py.
+  $('model').placeholder = local || $('provider').value === 'anthropic' ? 'Default model' : 'Model name (required)';
+  // The sidebar said this unconditionally, which stopped being true the day a
+  // hosted provider could be chosen.
+  $('privacyNote').textContent = local ? 'Code stays on this computer' : `Questions go to ${$('provider').value}`;
 }
 function resetAsk() {
   $('trail').replaceChildren();

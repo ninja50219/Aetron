@@ -5,6 +5,10 @@ That is not a style choice: Aetron installs with no required dependencies, and
 a module-level import would make every user of the scanner install an API
 client they may never call. Someone who wants this provider installs it, and
 someone who does not is never asked to.
+
+The key is never Aetron's to hold. The SDK finds it itself - ANTHROPIC_API_KEY,
+ANTHROPIC_AUTH_TOKEN, or a profile saved by "ant auth login" - so nothing about
+a credential is read, stored or written by this file.
 """
 
 from .base import Message, Provider, ProviderError
@@ -12,8 +16,28 @@ from .base import Message, Provider, ProviderError
 DEFAULT_MODEL = "claude-opus-5"
 
 # Replies here are one command or one short answer, not an essay. The ceiling
-# exists to stop a runaway, not to shape the response.
-MAX_TOKENS = 4096
+# exists to stop a runaway, not to shape the response - but on Claude Opus 5
+# and later, thinking is on by default and counts against it, so a ceiling
+# sized for the visible reply alone can be spent before any text is written.
+MAX_TOKENS = 16000
+
+# Models whose safety classifiers can decline a request, and which accept
+# "fallbacks": "default" - the API then re-runs a declined request on the model
+# Anthropic recommends for that kind of refusal, in the same call. Without it,
+# a false positive on a harmless question about someone's code is a dead end.
+# Any other model is asked directly, since the parameter is not valid for all.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+FALLBACK_MODELS = frozenset(
+    {"claude-opus-5", "claude-opus-5-5", "claude-fable-5", "claude-fable-5-1"}
+)
+
+NO_CREDENTIALS = (
+    "Anthropic needs an API key, and none was found. Set ANTHROPIC_API_KEY in "
+    "your shell before starting Aetron - Windows: setx ANTHROPIC_API_KEY "
+    "\"your-key\" (then open a new window); macOS or Linux: export "
+    "ANTHROPIC_API_KEY=\"your-key\" - or sign in with: ant auth login. "
+    "Never put the key in a file inside your project."
+)
 
 
 class AnthropicProvider(Provider):
@@ -41,18 +65,46 @@ class AnthropicProvider(Provider):
         except Exception as exc:
             raise ProviderError(f"Could not create an Anthropic client: {exc}") from exc
 
+    def request(self, system: str, messages: list[Message]) -> dict:
+        """The arguments of one Messages API call."""
+        arguments = {
+            "model": self.model,
+            "max_tokens": MAX_TOKENS,
+            "system": system,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+        }
+        if self.model in FALLBACK_MODELS:
+            arguments["betas"] = [FALLBACK_BETA]
+            arguments["fallbacks"] = "default"
+        return arguments
+
     def complete(self, system: str, messages: list[Message]) -> str:
+        arguments = self.request(system, messages)
+        create = (
+            self._client.beta.messages.create
+            if "fallbacks" in arguments
+            else self._client.messages.create
+        )
+
         try:
-            response = self._client.messages.create(
-                model=self.model,
-                max_tokens=MAX_TOKENS,
-                system=system,
-                messages=[{"role": m.role, "content": m.content} for m in messages],
-            )
+            response = create(**arguments)
+        except TypeError as exc:
+            # Found by asking with no key set: the SDK builds a client without
+            # complaint and raises a bare TypeError on the first request. It
+            # escaped every handler above this one, and the page's worker
+            # thread died with its question still marked as running.
+            if "authentication" in str(exc):
+                raise ProviderError(NO_CREDENTIALS) from exc
+            raise
         except self._anthropic.AuthenticationError as exc:
             raise ProviderError(
-                "Anthropic rejected the credentials. Set ANTHROPIC_API_KEY, "
+                "Anthropic rejected the credentials. Check ANTHROPIC_API_KEY, "
                 "or sign in with: ant auth login"
+            ) from exc
+        except self._anthropic.NotFoundError as exc:
+            raise ProviderError(
+                f"Anthropic has no model called {self.model!r}. "
+                f"The default is {DEFAULT_MODEL}."
             ) from exc
         except self._anthropic.RateLimitError as exc:
             raise ProviderError("Anthropic rate limit reached; try again shortly.") from exc
@@ -64,12 +116,17 @@ class AnthropicProvider(Provider):
         if response.stop_reason == "refusal":
             raise ProviderError("The model declined to answer this question.")
 
-        # content is a list of blocks; only the text ones are the reply.
+        # content is a list of blocks - thinking, text, and a fallback marker
+        # when another model took over; only the text ones are the reply.
         text = "".join(
             block.text for block in response.content if getattr(block, "type", "") == "text"
         )
 
         if not text.strip():
+            if response.stop_reason == "max_tokens":
+                raise ProviderError(
+                    f"{self.model} used its {MAX_TOKENS}-token limit before writing a reply."
+                )
             raise ProviderError("Anthropic returned an empty message.")
 
         return text
