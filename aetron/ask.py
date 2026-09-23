@@ -43,6 +43,12 @@ MAX_STEPS = 12
 
 SEARCH_LIMIT = 8
 
+# How much of a reply that was not a command goes back into the conversation.
+# The model is shown what it said so it can see why it was refused, but a
+# looping local model sends a thousand tokens of nothing per turn, and echoing
+# all of it crowded an 8192-token context within six turns on a real Ollama.
+ECHO_LIMIT = 300
+
 # What a citation's confidence is made of, out of 100. Each is a check that
 # either happened or did not - never a model's opinion of itself, because a
 # model asked how sure it is says "very" in the same tone whether it is right
@@ -320,9 +326,17 @@ def ask(
     project = _describe(scan_result, analysis)
     messages = [Message(role="user", content=f"{project}\n\nQuestion: {question}")]
 
+    # The question is restated where a truncating provider cannot drop it.
+    # Ollama, given more conversation than its context holds, silently removes
+    # the oldest messages and keeps the system prompt - and the oldest message
+    # is the one above, so the model went on searching for nothing it could
+    # still see. A request for a wider context helps only up to the length the
+    # model was trained at, which for some local models is 8192 tokens.
+    system = f"{SYSTEM_PROMPT}\nThe question you are answering: {question}\n"
+
     for _ in range(max_steps):
         try:
-            reply = provider.complete(SYSTEM_PROMPT, messages)
+            reply = provider.complete(system, messages)
         except ProviderError as exc:
             answer.incomplete = str(exc)
             return answer
@@ -339,7 +353,7 @@ def ask(
             answer.steps.append(step)
             if on_step:
                 on_step(step)
-            messages.append(Message(role="assistant", content=reply))
+            messages.append(Message(role="assistant", content=_shortened(reply)))
             messages.append(Message(role="user", content=step.observation))
             continue
 
@@ -385,6 +399,14 @@ def ask(
         f"The model did not reach an answer within {max_steps} requests."
     )
     return answer
+
+
+def _shortened(reply: str) -> str:
+    """A refused reply as the conversation keeps it: enough to see the mistake."""
+    reply = reply.strip()
+    if len(reply) <= ECHO_LIMIT:
+        return reply
+    return f"{reply[:ECHO_LIMIT]} [... {len(reply) - ECHO_LIMIT} more characters]"
 
 
 def _describe(scan_result: ScanResult, analysis: AnalysisResult) -> str:

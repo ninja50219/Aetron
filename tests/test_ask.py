@@ -241,6 +241,58 @@ class TestWhatTheModelIsTold:
         assert "no parser" in model.prompts[0]
 
 
+class Recording(Provider):
+    """A model that keeps everything it was sent, not just the last message."""
+
+    name = "recording"
+    model = "test"
+
+    def __init__(self, *replies: str) -> None:
+        self.replies = list(replies)
+        self.calls: list[tuple[str, list]] = []
+
+    def complete(self, system: str, messages: list) -> str:
+        self.calls.append((system, list(messages)))
+        return self.replies.pop(0) if self.replies else "ANSWER done"
+
+
+class TestWhatSurvivesALongConversation:
+    """Found on a real Ollama, which drops the oldest messages of a
+    conversation longer than its context and keeps the system prompt."""
+
+    def test_the_question_is_restated_in_the_system_prompt(self, project):
+        from aetron.ask import SYSTEM_PROMPT
+
+        scan_result, analysis = project()
+        model = Recording("SEARCH login", "ANSWER done")
+        ask(model, scan_result, analysis, "where is login?")
+        for system, _ in model.calls:
+            assert system.startswith(SYSTEM_PROMPT)
+            assert "where is login?" in system
+
+    def test_a_reply_that_is_not_a_command_goes_back_shortened(self, project):
+        """A looping model sends a thousand tokens of nothing per turn."""
+        from aetron.ask import ECHO_LIMIT
+
+        scan_result, analysis = project()
+        rambling = "xy" * 2000
+        model = Recording(rambling, "ANSWER done")
+        answer = ask(model, scan_result, analysis, "where is login?")
+
+        echoed = model.calls[1][1][1]
+        assert echoed.role == "assistant"
+        assert echoed.content.startswith(rambling[:ECHO_LIMIT])
+        assert len(echoed.content) < ECHO_LIMIT + 50
+        assert "3700 more characters" in echoed.content
+        assert answer.text == "done"
+
+    def test_a_short_reply_goes_back_whole(self, project):
+        scan_result, analysis = project()
+        model = Recording("I think I should search first.", "ANSWER done")
+        ask(model, scan_result, analysis, "where is login?")
+        assert model.calls[1][1][1].content == "I think I should search first."
+
+
 MOVEMENT = {
     "Player/PlayerMovement.cs": (
         "using UnityEngine;\n"
@@ -403,3 +455,4 @@ class TestTheAnswerPointsSomewhere:
 
         assert answer.citation.location == "Systems/SaveSystem.cs:3"
         assert answer.citation.confidence == 100
+
