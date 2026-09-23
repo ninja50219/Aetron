@@ -49,6 +49,33 @@ class TestSlicing:
         assert slice_of(make_project, layout, "a.py", "login").numbered().startswith("5|")
 
 
+class TestTheModuleIsNotADefinition:
+    """The parser records each file as a MODULE symbol named after the file,
+    so ``ask.py`` holds a module called ``ask`` and usually a function called
+    ``ask`` too. Found by running ``SOURCE aetron/ask.py ask`` against this
+    repository: the module matched first, and the whole 614-line file went
+    to the model."""
+
+    LAYOUT = {
+        "ask.py": '"""Asking."""\n\nx = 1\n\n\ndef ask():\n    return 2\n\n\ndef other():\n    return 3\n'
+    }
+
+    def test_a_function_named_after_its_file_is_sliced_alone(self, make_project):
+        result = slice_of(make_project, self.LAYOUT, "ask.py", "ask")
+        assert result.kind == "function"
+        assert result.location == "ask.py:6"
+        assert "return 2" in result.text
+        assert "other" not in result.text
+        assert result.available
+
+    def test_the_module_alone_cannot_be_asked_for(self, make_project):
+        """Its span is the file, and level 3 is one definition, not one file."""
+        layout = {"login.py": '"""Login."""\n\nx = 1\n'}
+        result = slice_of(make_project, layout, "login.py", "login")
+        assert not result.text
+        assert "no definition called 'login'" in result.problem
+
+
 class TestAttachedContext:
     def test_a_decorator_is_kept(self, make_project):
         layout = {"a.py": "import functools\n\n\n@functools.cache\ndef login():\n    pass\n"}

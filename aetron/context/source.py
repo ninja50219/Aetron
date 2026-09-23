@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aetron.analyzer.analyzer import AnalysisResult
-from aetron.analyzer.symbols import Symbol
+from aetron.analyzer.symbols import Symbol, SymbolKind
 from aetron.scanner.detect import read_source
 from aetron.scanner.scanner import ScanResult
 
@@ -84,16 +84,25 @@ def _find_symbol(
 
     Matches a qualified name first: asking for "Login.handle" must never return
     "Session.handle" merely because it was defined earlier in the file.
+
+    The file's own MODULE symbol is never a candidate. It is named after the
+    file and spans all of it, so ``ask`` in ``ask.py`` matched the module
+    before the function, and a request for one definition returned the whole
+    file - the one thing this level exists never to do. The outline does not
+    list the module either, so nothing that followed the levels could have
+    meant it.
     """
     found = next((f for f in analysis.files if f.rel_path == rel_path), None)
     if found is None:
         return None, []
 
-    exact = [s for s in found.symbols if s.qualified_name == name]
+    definitions = [s for s in found.symbols if s.kind != SymbolKind.MODULE]
+
+    exact = [s for s in definitions if s.qualified_name == name]
     if exact:
         return exact[0], exact
 
-    plain = [s for s in found.symbols if s.name == name]
+    plain = [s for s in definitions if s.name == name]
     return (plain[0] if plain else None), plain
 
 
@@ -229,6 +238,10 @@ def _no_such_definition(analysis: AnalysisResult, rel_path: str, name: str) -> s
     # qualified form is what comes back, because that is what resolves.
     qualified_by_plain: dict[str, str] = {}
     for symbol in found.symbols:
+        if symbol.kind == SymbolKind.MODULE:
+            # Suggesting the module would suggest the one name that cannot
+            # resolve, and a model that took the hint would loop on it.
+            continue
         qualified = symbol.qualified_name or symbol.name
         qualified_by_plain.setdefault(symbol.name, qualified)
         qualified_by_plain.setdefault(qualified, qualified)
