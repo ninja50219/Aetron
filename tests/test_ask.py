@@ -59,6 +59,21 @@ def project(make_project):
     return _build
 
 
+def crowded(layout):
+    """``layout`` buried under enough other files that the map leaves it out.
+
+    Four hundred files with three definitions each outrank a file with one,
+    so the map's budget is spent before it reaches the files under test -
+    which is how the rule that a file must be shown before it is read can
+    still be tested now that the map shows most of a small project.
+    """
+    filler = {
+        f"filler/f{i:03d}.py": "def a():\n    pass\n\n\ndef b():\n    pass\n\n\ndef c():\n    pass\n"
+        for i in range(400)
+    }
+    return {**filler, **layout}
+
+
 def commands(answer: Answer):
     return [(s.command, s.refused) for s in answer.steps]
 
@@ -147,12 +162,19 @@ class TestTheRulesAreEnforced:
         assert source_step.refused
         assert "STRUCTURE" in source_step.observation
 
-    def test_structure_of_an_unsearched_file_is_refused(self, project):
-        scan_result, analysis = project()
+    def test_structure_of_a_file_never_shown_is_refused(self, project):
+        scan_result, analysis = project(crowded(PROJECT))
         model = Scripted("STRUCTURE auth/login.py", "ANSWER gave up")
         answer = ask(model, scan_result, analysis, "where is login?")
         assert answer.steps[0].refused
         assert "SEARCH" in answer.steps[0].observation
+
+    def test_a_file_the_map_showed_needs_no_search(self, project):
+        """The map puts files forward exactly as a search does."""
+        scan_result, analysis = project()
+        model = Scripted("STRUCTURE auth/login.py", "ANSWER gave up")
+        answer = ask(model, scan_result, analysis, "where is login?")
+        assert not answer.steps[0].refused
 
     def test_a_refusal_returns_no_code(self, project):
         scan_result, analysis = project()
@@ -162,7 +184,7 @@ class TestTheRulesAreEnforced:
 
     def test_a_refusal_says_what_to_do_instead(self, project):
         """A refusal the model cannot act on just wastes a step."""
-        scan_result, analysis = project()
+        scan_result, analysis = project(crowded(PROJECT))
         model = Scripted("STRUCTURE auth/login.py", "SEARCH login", "ANSWER ok")
         answer = ask(model, scan_result, analysis, "q")
         assert "SEARCH for a word in its name" in answer.steps[0].observation
@@ -184,7 +206,9 @@ class TestTheRulesAreEnforced:
 class TestWhenThingsGoWrong:
     def test_a_model_that_never_answers_is_stopped(self, project):
         scan_result, analysis = project()
-        model = Scripted(*["SEARCH login"] * 20)
+        # Different searches, so it is the budget that stops it rather than
+        # the guard against a model repeating itself.
+        model = Scripted(*[f"SEARCH login{i}" for i in range(20)])
         answer = ask(model, scan_result, analysis, "q", max_steps=4)
         assert answer.text == ""
         assert "did not reach an answer" in answer.incomplete
@@ -220,13 +244,19 @@ class TestWhenThingsGoWrong:
 
 
 class TestWhatTheModelIsTold:
-    def test_the_project_is_described_without_listing_its_files(self, project):
+    def test_the_project_is_mapped_by_name_never_by_code(self, project):
+        """The design changed on 2026-09-23: the first real model, starting
+        from two lines about the project, searched "main" eleven times. It now
+        starts from a map - names of files and definitions - and still never
+        from code."""
         scan_result, analysis = project()
-        model = Scripted("ANSWER done")
+        model = Recording("ANSWER done")
         ask(model, scan_result, analysis, "where is login?")
-        opening = model.prompts[0]
-        assert "2 files" in opening
-        assert "auth/login.py" not in opening
+        system, messages = model.calls[0]
+        assert "2 files" in system
+        assert "login.py" in system and "class LoginController" in system
+        sent = system + "".join(m.content for m in messages)
+        assert "check(password)" not in sent
 
     def test_the_question_is_passed_through(self, project):
         scan_result, analysis = project()
@@ -236,9 +266,9 @@ class TestWhatTheModelIsTold:
 
     def test_unparsed_files_are_declared(self, project):
         scan_result, analysis = project({"a.py": "x = 1\n", "b.go": "package b\n"})
-        model = Scripted("ANSWER done")
+        model = Recording("ANSWER done")
         ask(model, scan_result, analysis, "q")
-        assert "no parser" in model.prompts[0]
+        assert "b.go: (no parser: name only)" in model.calls[0][0]
 
 
 class Recording(Provider):
@@ -523,9 +553,12 @@ class TestAFileNamedTheWayAModelWritesIt:
 
     def test_a_short_name_still_needs_a_search_first(self, project):
         """The rule the refusal enforced is unchanged: nothing is read that no
-        search put forward."""
-        scan_result, analysis = project(UNITY)
-        model = Scripted("STRUCTURE PlayerMovment.cs", "ANSWER gave up")
+        search, map or listing put forward."""
+        # Not a Unity component, which the map would rank first and show.
+        scan_result, analysis = project(
+            crowded({"Assets/Scripts/Inventory.cs": "public class Inventory\n{\n}\n"})
+        )
+        model = Scripted("STRUCTURE Inventory.cs", "ANSWER gave up")
         answer = ask(model, scan_result, analysis, "q")
         assert answer.steps[0].refused
         assert "use the path exactly as the results give it" in answer.steps[0].observation
@@ -567,3 +600,248 @@ class TestAFileNamedTheWayAModelWritesIt:
         answer = ask(model, scan_result, analysis, "q")
         assert [s.refused for s in answer.steps] == [False, False, False, False]
         assert answer.files_read == ["Assets/My Scripts/Jump.cs"]
+
+
+SCRIPTS = {
+    "APPopen.py": 'def open_app(name):\n    pass\n\n\ndef main():\n    open_app("x")\n\n\nif __name__ == "__main__":\n    main()\n',
+    "calibration.py": "def calibrate():\n    pass\n",
+    "ScreenReader.py": "class ScreenReader:\n    def read(self):\n        pass\n",
+}
+
+
+class TestTheSecondRealRun:
+    """qwen2.5-coder, asked "What starts the program?" of a folder of Python
+    scripts, sent SEARCH startup and then SEARCH main eleven times."""
+
+    def test_the_map_already_says_what_starts_it(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        model = Recording("ANSWER APPopen.py starts it, main at line 5.")
+        answer = ask(model, scan_result, analysis, "What starts the program?")
+        assert "Starts at: APPopen.py (script)" in model.calls[0][0]
+        assert answer.steps == [answer.steps[0]] and answer.text
+
+    def test_a_repeated_request_is_refused_not_run_again(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        model = Scripted("SEARCH startup", *["SEARCH main"] * 11)
+        answer = ask(model, scan_result, analysis, "What starts the program?", max_steps=12)
+        mains = [s for s in answer.steps if s.argument == "main"]
+        assert not mains[0].refused
+        assert all(s.refused for s in mains[1:])
+        assert "You already asked for this (request 2)" in mains[1].observation
+
+    def test_the_model_is_told_when_requests_run_out(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        model = Recording("SEARCH a", "SEARCH b", "SEARCH c", "ANSWER done")
+        ask(model, scan_result, analysis, "q", max_steps=4)
+        last_observation = model.calls[3][1][-1].content
+        assert "One request left: ANSWER now" in last_observation
+
+
+class TestAskingForMoreOfTheMap:
+    def test_files_lists_a_folder_and_makes_it_readable(self, project):
+        scan_result, analysis = project(crowded({"deep/inner/kept.py": "def kept():\n    pass\n"}))
+        model = Scripted("FILES deep/inner", "STRUCTURE deep/inner/kept.py", "ANSWER done")
+        answer = ask(model, scan_result, analysis, "q")
+        assert "kept.py: kept" in answer.steps[0].observation
+        assert not answer.steps[1].refused
+
+    def test_skipped_lists_what_the_index_left_out(self, project):
+        scan_result, analysis = project({"a.py": "x = 1\n", "dist/app.min.js": "var a=1;" * 400})
+        model = Scripted("SKIPPED", "ANSWER done")
+        answer = ask(model, scan_result, analysis, "q")
+        assert answer.steps[0].command == "SKIPPED"
+        assert "dist" in answer.steps[0].observation
+
+    def test_outline_is_understood_as_structure(self):
+        """The page labels the step OUTLINE, and a model may copy the label."""
+        assert parse_command("OUTLINE a.py") == ("STRUCTURE", "a.py")
+
+
+class TestEffort:
+    def test_each_effort_has_its_own_request_budget(self, project):
+        from aetron.ask import EFFORTS
+
+        scan_result, analysis = project(SCRIPTS)
+        for name in ("low", "medium", "high"):
+            model = Scripted(*[f"SEARCH word{i}" for i in range(30)])
+            answer = ask(model, scan_result, analysis, "q", effort=name)
+            assert len(answer.steps) == EFFORTS[name].max_steps
+            assert answer.effort == name
+
+    def test_low_effort_asks_for_the_command_alone(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        low, medium = Recording("ANSWER a"), Recording("ANSWER b")
+        ask(low, scan_result, analysis, "q", effort="low")
+        ask(medium, scan_result, analysis, "q", effort="medium")
+        assert "Reply with the command only" in low.calls[0][0]
+        assert "THINK:" in medium.calls[0][0]
+
+    def test_an_unknown_effort_falls_back_to_the_default(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        assert ask(Scripted("ANSWER x"), scan_result, analysis, "q", effort="max").effort == "medium"
+
+
+class TestThinking:
+    def test_the_reason_line_becomes_the_steps_thought(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        model = Scripted("THINK: the map says APPopen.py runs as a script\nSTRUCTURE APPopen.py", "ANSWER done")
+        answer = ask(model, scan_result, analysis, "q")
+        assert answer.steps[0].thought == "the map says APPopen.py runs as a script"
+        assert answer.steps[0].command == "STRUCTURE"
+
+    def test_a_thought_is_not_sent_back_to_the_model(self, project):
+        """It was for the reader. Sending it back costs tokens every turn."""
+        scan_result, analysis = project(SCRIPTS)
+        model = Recording("THINK: a long reason\nSTRUCTURE APPopen.py", "ANSWER done")
+        ask(model, scan_result, analysis, "q")
+        assert model.calls[1][1][1].content == "STRUCTURE APPopen.py"
+
+    def test_a_models_own_thinking_is_preferred(self, project):
+        scan_result, analysis = project(SCRIPTS)
+
+        class Thinker(Scripted):
+            def complete(self, system, messages):
+                self.last_thinking = "I should look at the script."
+                return super().complete(system, messages)
+
+        answer = ask(Thinker("STRUCTURE APPopen.py", "ANSWER done"), scan_result, analysis, "q")
+        assert answer.steps[0].thought == "I should look at the script."
+
+
+class TestAConversation:
+    def test_earlier_questions_are_carried_as_text(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        model = Recording("ANSWER done")
+        ask(model, scan_result, analysis, "and what does it open?",
+            history=[("What starts the program?", "APPopen.py, main at line 5.")])
+        opening = model.calls[0][1][0].content
+        assert "Earlier question: What starts the program?" in opening
+        assert "Your answer: APPopen.py, main at line 5." in opening
+        assert opening.endswith("Question: and what does it open?")
+
+    def test_only_the_last_few_are_kept_and_long_answers_are_cut(self, project):
+        from aetron.ask import HISTORY_ANSWER_CHARS, HISTORY_TURNS
+
+        scan_result, analysis = project(SCRIPTS)
+        model = Recording("ANSWER done")
+        history = [(f"q{i}", "x" * 1000) for i in range(6)]
+        ask(model, scan_result, analysis, "next", history=history)
+        opening = model.calls[0][1][0].content
+        assert opening.count("Earlier question") == HISTORY_TURNS
+        assert "q0" not in opening
+        assert "x" * (HISTORY_ANSWER_CHARS + 1) not in opening
+
+    def test_an_earlier_summary_is_in_the_map(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        model = Recording("ANSWER done")
+        ask(model, scan_result, analysis, "q", notes="Desktop automation scripts.")
+        assert "Summary from an earlier look: Desktop automation scripts." in model.calls[0][0]
+
+    def test_the_stable_part_comes_first(self, project):
+        """The instructions and the map are the same for every question about
+        a project, so a provider's cache can reuse them; only the end changes."""
+        scan_result, analysis = project(SCRIPTS)
+        one, two = Recording("ANSWER a"), Recording("ANSWER b")
+        ask(one, scan_result, analysis, "first question")
+        ask(two, scan_result, analysis, "a different one")
+        a, b = one.calls[0][0], two.calls[0][0]
+        common = len(a.split("The question you are answering")[0])
+        assert a[:common] == b[:common]
+
+
+class TestALongConversationShrinks:
+    def test_old_results_are_shortened_and_recent_ones_kept(self, project):
+        from aetron.ask import EFFORTS
+
+        big = {f"m{i}.py": "".join(f"def f{i}_{j}():\n    pass\n" for j in range(80)) for i in range(8)}
+        scan_result, analysis = project(big)
+        model = Recording(*[f"STRUCTURE m{i}.py" for i in range(8)], "ANSWER done")
+        ask(model, scan_result, analysis, "q", effort="low", max_steps=9)
+
+        last = model.calls[-1][1]
+        results = [m.content for m in last[1:] if m.role == "user"]
+        shortened = [r for r in results if r.startswith("[Earlier result, shortened")]
+        assert shortened, "a long conversation should shrink"
+        keep = EFFORTS["low"].keep_full
+        assert all(not r.startswith("[Earlier result") for r in results[-keep:])
+        assert sum(len(m.content) for m in last) <= EFFORTS["low"].conversation_budget + 5000
+
+    def test_a_short_question_is_never_shortened(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        model = Recording("STRUCTURE APPopen.py", "STRUCTURE calibration.py", "ANSWER done")
+        ask(model, scan_result, analysis, "q")
+        assert not any("shortened" in m.content for m in model.calls[-1][1])
+
+    def test_a_shortened_result_may_be_asked_for_again(self, project):
+        big = {f"m{i}.py": "".join(f"def f{i}_{j}():\n    pass\n" for j in range(80)) for i in range(8)}
+        scan_result, analysis = project(big)
+        replies = [f"STRUCTURE m{i}.py" for i in range(8)] + ["STRUCTURE m0.py", "ANSWER done"]
+        answer = ask(Scripted(*replies), scan_result, analysis, "q", effort="low", max_steps=10)
+        again = answer.steps[8]
+        assert again.argument == "m0.py" and not again.refused
+
+
+class TestWhatAQuestionCost:
+    def test_an_estimate_when_the_provider_reports_nothing(self, project):
+        scan_result, analysis = project(SCRIPTS)
+        answer = ask(Scripted("STRUCTURE APPopen.py", "ANSWER done"), scan_result, analysis, "q")
+        assert answer.tokens_in > 0 and answer.tokens_out > 0
+        assert answer.tokens_estimated
+
+    def test_the_providers_own_count_when_it_has_one(self, project):
+        scan_result, analysis = project(SCRIPTS)
+
+        class Counting(Scripted):
+            def complete(self, system, messages):
+                self.last_usage = (1000, 7)
+                return super().complete(system, messages)
+
+        answer = ask(Counting("STRUCTURE APPopen.py", "ANSWER done"), scan_result, analysis, "q")
+        assert (answer.tokens_in, answer.tokens_out) == (2000, 14)
+        assert not answer.tokens_estimated
+
+
+class TestTheSummary:
+    def test_a_summary_is_a_low_effort_question(self, project):
+        from aetron.ask import SUMMARY_QUESTION, summarize
+
+        scan_result, analysis = project(SCRIPTS)
+        model = Recording("ANSWER This project seems to be a set of desktop automation scripts.")
+        answer = summarize(model, scan_result, analysis)
+        assert answer.question == SUMMARY_QUESTION
+        assert answer.effort == "low"
+        assert answer.text.startswith("This project seems to be")
+
+
+class TestAFileTheMapLedTo:
+    def test_scores_like_one_a_search_returned(self, project):
+        """Found in the browser: an answer walked perfectly from the map
+        scored 75, because only a search could pass the first check - and
+        the map is now the route a model is meant to take."""
+        scan_result, analysis = project(SCRIPTS)
+        model = Scripted("STRUCTURE APPopen.py", "SOURCE APPopen.py main", "ANSWER main in APPopen.py, line 5.")
+        answer = ask(model, scan_result, analysis, "What starts the program?")
+        assert answer.citation.confidence == 100
+        ranked = next(c for c in answer.citation.checks if c.name == "ranked")
+        assert ranked.detail == "The project map listed APPopen.py"
+
+
+class TestALostModelIsStoppedEarly:
+    def test_three_refusals_in_a_row_end_the_question(self, project):
+        """The second real trail, replayed: once every repeat is refused, a
+        model that keeps repeating is lost, and paying for more requests
+        buys nothing."""
+        scan_result, analysis = project(SCRIPTS)
+        model = Scripted("SEARCH startup", *["SEARCH main"] * 11)
+        answer = ask(model, scan_result, analysis, "What starts the program?", max_steps=12)
+        assert len(answer.steps) == 5
+        assert "refused 3 times in a row" in answer.incomplete
+
+    def test_a_refusal_the_model_recovers_from_does_not_count(self, project):
+        scan_result, analysis = project(crowded(PROJECT))
+        model = Scripted(
+            "STRUCTURE auth/login.py", "STRUCTURE auth/login.py",
+            "SEARCH login", "STRUCTURE auth/login.py", "ANSWER auth/login.py line 2",
+        )
+        answer = ask(model, scan_result, analysis, "q")
+        assert answer.text == "auth/login.py line 2"
