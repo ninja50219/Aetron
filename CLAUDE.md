@@ -22,29 +22,28 @@ Last verified 2026-09-23 by running the suite, not by reading this file.
           && echo "$b: contained in main" || echo "$b: HAS WORK MAIN LACKS"
   done
   ```
-- 573 tests pass and 4 skip in about 6 seconds; 568 pass and 9 skip without
-  `pathspec`, 562 and 15 without `anthropic` as well. The 4 are
-  `tests/test_ollama_live.py`, which runs only when `AETRON_OLLAMA_MODEL`
-  names a pulled model.
+- 585 tests pass and 4 skip in about 6 seconds; 579 pass and 10 skip without
+  `anthropic` (the usual Windows setup), 574 and 15 without `pathspec` too.
+  The 4 are `tests/test_ollama_live.py`, which runs only when
+  `AETRON_OLLAMA_MODEL` names a pulled model.
 - The pipeline runs end to end in two places. `aetron ask <project> "where is
   movement?"` answers from a terminal, and `aetron ui` opens a local page that
   does the same thing with the steps visible and the cited method on screen.
-- **A real Ollama daemon has now been run; a real model still has not.**
-  Ollama 0.34.3 was installed from its GitHub release on 2026-09-23 and driven
-  with probe models built from random weights, since the environment's network
-  policy blocks `ollama.com`, `registry.ollama.ai` and `huggingface.co`. That
-  was enough to find that **the system prompt had never been sent** - every
-  local model ever pointed at Aetron was asked to follow a command language it
-  had not been shown - plus three more silent failures, all fixed (see the
-  session log). Whether a 7B model follows `SYSTEM_PROMPT` now that it can
-  see it is still unmeasured. With Ollama and a pulled model it is one line:
+- **A real model has now run the protocol, and it keeps to the command
+  language.** On 2026-09-23, after the system prompt was finally being sent
+  (see the session log), the user ran `qwen2.5-coder` (7B) through the page on
+  Windows. Every reply was one well-formed command, no prose, no fences. It
+  still never answered: it looped on a refusal that was Aetron's fault, not
+  the model's, and that is fixed. Whether it now reaches an answer end to end
+  has not been re-run. The measurement, for any pulled model:
 
   ```bash
   AETRON_OLLAMA_MODEL=qwen2.5-coder python -m pytest tests/test_ollama_live.py -v -s
   ```
 
-  `test_the_first_reply_is_a_command` is the measurement. If it fails, the
-  prompt needs work before the code does.
+  `test_the_first_reply_is_a_command` is the measurement. Then ask the page a
+  question about a real project and read the trail: a refused step now says
+  why it was refused.
 
 ## What Aetron is for
 
@@ -275,8 +274,12 @@ standard library, not by reading the README.
   in the project uses anything else in it. Turning one into
   a file means reading the Rojo project file and reproducing its mapping; an
   invented edge would be worse than no edge.
-- Search reads names and docstrings. It has no idea that "sign in" and "login"
-  are the same question; a synonym is a model's job, not an index's.
+- Search reads names and docstrings. It tolerates one slip of spelling in
+  words of five letters or more - a letter dropped, added, or two swapped - so
+  "movement" finds `PlayerMovment`, ranked below any exact spelling. It has
+  no idea that "sign in" and "login" are the same question; a synonym is a
+  model's job, not an index's, but a project's typo is not something a model
+  can know.
 - The `ranked` check passes by construction: only a file a search returned is
   eligible to be cited at all, so a citation's floor is 25 and three of the
   four checks are what actually vary. The check is kept because its detail
@@ -291,10 +294,11 @@ standard library, not by reading the README.
   class contains its methods and "line 7" is true of both. That is right for
   "where is movement" and wrong for a question whose answer really is the
   whole class; the outline is one click away for that case.
-- `ask` has been run against a real Ollama daemon but not a real model: the
-  environment it was written in could install Ollama and could not download
-  weights. The transport is verified; how well a 7B model follows the protocol
-  is unmeasured, and `tests/test_ollama_live.py` is how to find out.
+- `ask` has met one real model once (qwen2.5-coder 7B, see above), and not
+  yet end to end. Small models shorten paths - `PlayerMovment.cs` for
+  `Assets/Scripts/PlayerMovment.cs` - so a file is resolved from what the
+  model wrote when exactly one file it already found fits; two that fit are
+  listed back to it. Nothing unsearched is ever resolved.
 - Ollama caps `num_ctx` at the length a model was trained at. Aetron asks for
   16384; a model trained at 8192 gets 8192, and a long question on it can
   still lose its oldest messages. The question is restated in the system
@@ -432,11 +436,39 @@ for each finding fail on the code before this session; `aetron ask` and the
 page driven end to end against the real daemon, desktop and phone width, no
 CSP violations. 505 tests became 573.
 
+**Later the same day: the first real model.** The user installed Ollama on
+Windows and asked the page "where is my movment script" with qwen2.5-coder.
+The model kept to the command language perfectly - the question this project
+had carried since its first session - and still never answered. The trail:
+
+    SEARCH movement script
+    OUTLINE PlayerMovment.cs        refused
+    SEARCH PlayerMovment.cs
+    OUTLINE PlayerMovment.cs        refused, and so on to twelve
+
+The search had offered `Assets/Scripts/PlayerMovment.cs`; the model wrote the
+file name alone; and the refusal said the file "has not come up in a search",
+which was false, so the model searched again and again. Four fixes, each
+with a test built from the model's trail:
+
+- A file named loosely - bare name, any case, backslashes - resolves to the
+  one found file it fits, and the step is recorded under the real path.
+  Two that fit are listed back. The rule is unchanged: nothing unsearched.
+- `SOURCE` split its argument at the first space, which broke on
+  `Assets/My Scripts/...`; it splits at the last, since names have none.
+- Search tolerates one slip of spelling. Replaying the trail found that the
+  model had corrected "movment" to "movement", and the file is spelled
+  `PlayerMovment` - so on a project without other matches the first search
+  finds nothing at all. Costs about 10% of a search over the standard
+  library, after caching.
+- The page showed a refusal only as a colour. It now says what the model was
+  told, which is how the loop above would have been obvious at a glance.
+
 **What the next session should pick up:**
 
-1. **Pull a real model and run `tests/test_ollama_live.py`.** Ten minutes on
-   any machine with Ollama. It is now a fair test: until today the model
-   could not have passed it.
+1. **Ask the same question again with the same model**, and read the trail.
+   It is the first end-to-end run of a real model, and the thing most likely
+   to surface the next problem.
 2. **A Java or Go parser**, as before.
 3. Reasoning models and `num_predict` - see the TODO in `ollama.py`.
 
