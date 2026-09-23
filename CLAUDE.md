@@ -3,6 +3,30 @@
 Guidance for AI agents working on Aetron. Read this first; it records the
 design decisions, the current state, and where the previous session stopped.
 
+## Where things stand
+
+Last verified 2026-09-23 by running the suite, not by reading this file.
+
+- `main` is at `209ec65` and is the only branch worth starting from. Every
+  commit ever pushed to this repository is contained in it. Four other
+  branches exist: `claude/gallant-bell-s94tns` points at the same commit as
+  `main`, and `feat/interactive-menu`, `feat/scanner` and
+  `claude/funny-dijkstra-5snaae` are behind it. All four are fully merged and
+  none holds work that `main` lacks - check with
+  `git merge-base --is-ancestor origin/<branch> origin/main` rather than
+  taking this on faith.
+- 505 tests pass in about 3 seconds; 500 pass and 5 skip without `pathspec`.
+- The pipeline runs end to end in two places. `aetron ask <project> "where is
+  movement?"` answers from a terminal, and `aetron ui` opens a local page that
+  does the same thing with the steps visible and the cited method on screen.
+- **The one thing nobody has done:** run any of this against a real local
+  model. Every test uses a scripted provider, because no environment this was
+  built in had an Ollama daemon. The loop, the parsing, the enforcement and the
+  citation are covered; whether a 7B model actually keeps to the command
+  language is unmeasured. If you have Ollama, that is the highest-value hour
+  available, and expect `SYSTEM_PROMPT` in `ask.py` to need work before the
+  code does.
+
 ## What Aetron is for
 
 Aetron answers questions about an unfamiliar codebase without sending the
@@ -179,12 +203,15 @@ standard library, not by reading the README.
 
 **Not built — this is the work:**
 
-1. **Parsers for the remaining nine languages** `EXTENSION_MAP` knows — Java,
-   Go, Rust, Ruby, PHP, C, C++, Kotlin, Swift, Lua, Scala, Dart. `PARSERS` in
-   `analyzer/analyzer.py` has four entries. Adding one is a parser plus a line
-   in that dict; `csharp_parser.py` is the worked example for a curly-brace
-   language and `javascript_parser.py` for one with many ways to spell the
-   same declaration.
+1. **Parsers for the remaining eleven languages** `EXTENSION_MAP` knows — C,
+   C++, Dart, Go, Java, Kotlin, PHP, Ruby, Rust, Scala, Swift. The scanner
+   recognises sixteen languages and `PARSERS` in `analyzer/analyzer.py` has
+   five entries (Python, C#, JavaScript, TypeScript, Lua), so the other eleven
+   are found by name and never read. Adding one is a parser plus a line in that
+   dict; `csharp_parser.py` is the worked example for a curly-brace language
+   and `javascript_parser.py` for one with many ways to spell the same
+   declaration. Recount from the code rather than trusting this line: it said
+   "nine" and listed twelve, Lua among them, for a week after Lua landed.
 2. **Documentation generation** and **potential bug detection**, from the
    README checklist.
 3. **More providers.** `ai_providers/` has Ollama and Anthropic. A provider is
@@ -259,6 +286,36 @@ python -m pytest
 - Unresolved decisions go in a `TODO:` comment *with a recommendation*, so the
   next session inherits the thinking and not just the problem.
 
+**Exercising the page without a model.** The suite covers the ask loop, but a
+page is only really tested by driving it, and no environment here has had an
+Ollama daemon. Swap the provider and run the real server:
+
+```python
+from aetron import web
+from aetron.ai_providers.base import Provider
+
+class Scripted(Provider):
+    name, model = "ollama", "qwen2.5-coder"
+    def __init__(self): self.replies = ["SEARCH movement", "STRUCTURE ...", "ANSWER ..."]
+    def complete(self, system, messages):
+        time.sleep(1)          # a local model is not instant; exercise the polling
+        return self.replies.pop(0)
+
+web.get_provider = lambda name, model=None, **k: Scripted()
+web.main(["--no-browser", "--port", "8801"])
+```
+
+Then drive it with a headless browser and watch the console. Three things this
+catches that the suite cannot: a Content-Security-Policy violation (the policy
+allows no inline styles, so anything set through an element's `style` is dead
+on arrival), a step trail that disagrees with the answer card, and layout that
+breaks at phone width. Raise a *sleep* in the scripted `complete` rather than
+removing it - answering instantly hides every polling bug there is.
+
+Note that `index.html` is read once when the server starts, while `app.css` and
+`app.js` are read per request. Editing the page markup needs a restart; editing
+its styles or logic does not.
+
 ## Session log
 
 Append one entry per session. State what landed and what the next session
@@ -290,6 +347,23 @@ favicon, which predates all of this.
 
 Also fixed: the trail counted ANSWER as a request while the answer card did
 not, so the same run reported 4 requests in one place and 3 in another.
+
+**What the next session should pick up**, in the order I would take them:
+
+1. **A real local model**, still. See "Where things stand" at the top of this
+   file; nothing about that has changed and nothing else on this list matters
+   as much. Ten minutes for anyone with Ollama installed.
+2. **A Java or Go parser**, whichever the projects you care about are written
+   in. `csharp_parser.py` is the worked example. Write the tests first: both
+   pattern-based parsers grew their bugs in the same two places, a brace that
+   opens and closes on one line and a declaration counted as a use of itself.
+3. **A GPT or Gemini provider**, if wanted - one class, one method. The page
+   picks up any name in `PROVIDERS` without further change.
+4. **Delete the merged branches** when convenient. Four exist, three are dead
+   weight, and the one real cost of leaving them is that the next agent may
+   branch from a stale one, which already happened once: the redesign and the
+   question mode were built on the same base in parallel and had to be merged
+   by hand.
 
 ### 2026-09-14 — the frontend asks the model
 
